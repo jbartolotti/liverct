@@ -23,7 +23,7 @@ classifiers = [
 
 [project.optional-dependencies]
 bids = [
-    "dcm2bids4ct>=0.1.0",
+    "dcm2bids4ct @ git+https://github.com/ChristianHinge/dcm2bids4ct.git",
 ]
 dev = [
     "pytest>=6.0",

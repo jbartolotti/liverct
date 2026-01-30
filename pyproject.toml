@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "liverct"
+version = "0.1.0"
+description = "A Python library for liver CT image processing and analysis"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+    {name = "jbartolotti", email = "your.email@example.com"},
+]
+keywords = ["liver", "ct", "imaging", "medical"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "pytest-cov>=2.0",
+    "black>=22.0",
+    "isort>=5.0",
+    "flake8>=4.0",
+]
+
+[project.urls]
+Repository = "https://github.com/jbartolotti/liverct"

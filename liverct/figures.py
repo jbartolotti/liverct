@@ -217,6 +217,48 @@ def build_composite_mask_from_files(
     return composite
 
 
+def create_and_save_skeletal_composite(
+    bids_root: Path,
+    subject_label: str,
+    session_label: Optional[str] = None,
+) -> Path:
+    """
+    Create composite skeletal mask from individual bone masks in total/ and save to tissue_types/.
+    
+    This is a derived composite file combining all individual bone masks.
+    Not a direct TotalSegmentator output.
+    
+    Returns
+    -------
+    Path
+        Path to saved composite skeletal mask (tissue_types/skeletal_composite.nii.gz)
+    """
+    subject_label = _normalize_subject_label(subject_label)
+    session_label = _normalize_session_label(session_label)
+    
+    total_dir = find_total_dir(bids_root, subject_label, session_label=session_label)
+    bone_files = find_total_bone_files(total_dir)
+    
+    # Load first bone file to get reference shape and affine
+    first_bone = nib.load(str(bone_files[0]))
+    ref_shape = first_bone.shape
+    ref_affine = first_bone.affine
+    
+    # Build composite
+    composite = build_composite_mask_from_files(bone_files, reference_shape=ref_shape)
+    
+    # Save to tissue_types folder
+    tissue_types_dir = find_tissue_types_dir(bids_root, subject_label, session_label=session_label)
+    tissue_types_dir.mkdir(parents=True, exist_ok=True)
+    
+    output_path = tissue_types_dir / "skeletal_composite.nii.gz"
+    composite_img = nib.Nifti1Image(composite.astype(np.uint8), affine=ref_affine)
+    nib.save(composite_img, str(output_path))
+    
+    logger.info(f"Saved skeletal composite: {output_path}")
+    return output_path
+
+
 def _select_slices(mask_union: np.ndarray, axis: int, num_slices: int) -> List[int]:
     # Determine slices with any mask content
     axes = tuple(i for i in range(mask_union.ndim) if i != axis)
@@ -409,17 +451,31 @@ def create_tissue_types_montage_from_bids(
     label_arrays: Dict[str, np.ndarray] = {}
     if include_skeletal:
         try:
-            total_dir = find_total_dir(bids_root, subject_label, session_label=session_label)
-            bone_files = find_total_bone_files(total_dir)
-            ct_img = nib.load(str(ct_file))
-            skeletal_mask = build_composite_mask_from_files(
-                bone_files,
-                reference_shape=ct_img.shape,
-            )
-            if skeletal_mask.any():
-                label_arrays["Skeletal"] = skeletal_mask
+            # Check if composite already exists
+            skeletal_file = seg_dir / "skeletal_composite.nii.gz"
+            if not skeletal_file.exists():
+                logger.info("Creating skeletal composite from total masks...")
+                create_and_save_skeletal_composite(
+                    bids_root, subject_label, session_label=session_label
+                )
+            
+            # Load the composite
+            if skeletal_file.exists():
+                skeletal_img = nib.load(str(skeletal_file))
+                logger.info(f"Loaded skeletal composite: shape={skeletal_img.shape}")
+                ct_img = nib.load(str(ct_file))
+                if skeletal_img.shape == ct_img.shape:
+                    skeletal_mask = skeletal_img.get_fdata() > 0
+                    if skeletal_mask.any():
+                        label_arrays["Skeletal"] = skeletal_mask
+                    else:
+                        logger.warning(f"Skeletal composite mask is empty for {subject_label}")
+                else:
+                    logger.error(
+                        f"Skeletal composite shape mismatch: expected {ct_img.shape}, got {skeletal_img.shape}"
+                    )
             else:
-                logger.warning(f"Composite skeletal mask is empty for {subject_label}")
+                logger.warning(f"Skeletal composite not found and could not be created")
         except Exception as e:
             logger.warning(f"Skipping skeletal composite for {subject_label}: {e}")
 

@@ -72,8 +72,8 @@ class CTSegmentationPipeline:
             logger.warning(f"CT directory not found: {ct_base}")
             return None
 
-        # Find NIfTI files with metadata
-        nifti_files = list(ct_base.glob("*.nii.gz"))
+        # Find NIfTI files with metadata (both .nii and .nii.gz)
+        nifti_files = list(ct_base.glob("*.nii.gz")) + list(ct_base.glob("*.nii"))
         if not nifti_files:
             logger.warning(f"No CT images found in {ct_base}")
             return None

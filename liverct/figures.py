@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LABEL_COLORS = {
     "SAT": "#f4a261",          # subcutaneous adipose tissue
-    "VAT": "#e76f51",          # visceral adipose tissue
-    "Muscle": "#2a9d8f",       # muscle
-    "Skeletal": "#264653",     # skeletal tissue/bone
+    "VAT": "#e2e750",          # visceral adipose tissue
+    "Muscle": "#a32020",       # muscle
+    "Skeletal": "#169C83",     # skeletal tissue/bone
 }
 
 LABEL_PATTERNS = {
@@ -28,21 +28,30 @@ LABEL_PATTERNS = {
 }
 
 TOTAL_BONE_PATTERNS = [
-    "vertebra",
-    "rib",
-    "sternum",
-    "scapula",
-    "clavicle",
-    "pelvis",
-    "sacrum",
-    "femur",
-    "humerus",
     "skull",
-    "mandible",
+    "clavicula"
+    "scapula",
+    "humerus",
+    "vertebra",
+    "sternum",
+    "rib",
+    "costal_cartilages",
+    "ulna",
+    "radius",
+    "intervertebral_discs",
+    "hip",
+    "sacrum",
+    "carpal",
+    "metacarpal",
+    "phalanges_hand",
+    "femur",
     "patella",
-    "tibia",
     "fibula",
-]
+    "tibia",
+    "tarsal",
+    "metatarsal",
+    "phalanges_foot",
+]    
 
 
 def _normalize_subject_label(subject_label: str) -> str:

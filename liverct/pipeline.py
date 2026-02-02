@@ -34,6 +34,7 @@ class BIDSProcessingPipeline:
         self,
         process_func: Callable,
         log_summary: bool = True,
+        subjects: Optional[Union[str, List[str]]] = None,
     ) -> Dict[str, Any]:
         """
         Apply processing function to all subjects in BIDS dataset.
@@ -45,6 +46,9 @@ class BIDSProcessingPipeline:
             Signature: process_func(subject_label, session_label=None) -> bool
         log_summary : bool
             Whether to log summary statistics
+        subjects : str or list of str, optional
+            Single subject ID or list of subject IDs to process.
+            If None, processes all subjects. IDs can be with or without 'sub-' prefix.
 
         Returns
         -------
@@ -52,6 +56,18 @@ class BIDSProcessingPipeline:
             Summary with keys: 'successful', 'failed', 'skipped'
         """
         subject_dirs = sorted([d for d in self.bids_root.glob("sub-*") if d.is_dir()])
+        
+        # Filter subjects if specified
+        if subjects is not None:
+            if isinstance(subjects, str):
+                subjects = [subjects]
+            # Normalize subject IDs (ensure sub- prefix)
+            subjects_normalized = [s if s.startswith('sub-') else f'sub-{s}' for s in subjects]
+            subject_dirs = [d for d in subject_dirs if d.name in subjects_normalized]
+            if not subject_dirs:
+                logger.warning(f"No matching subjects found for: {subjects}")
+                return {"successful": 0, "failed": 0, "skipped": 0}
+        
         logger.info(f"Found {len(subject_dirs)} subjects")
 
         results = {"successful": 0, "failed": 0, "skipped": 0}
@@ -89,6 +105,7 @@ class BIDSProcessingPipeline:
         device: str = "gpu",
         nr_thr_resamp: int = 1,
         nr_thr_saving: int = 6,
+        overwrite: bool = False,
         output_dir: Optional[Path] = None,
     ) -> bool:
         """
@@ -116,6 +133,8 @@ class BIDSProcessingPipeline:
             Number of threads for resampling (lower to reduce memory)
         nr_thr_saving : int
             Number of threads for saving (lower to reduce memory)
+        overwrite : bool
+            If True, re-run segmentation even if output exists. Default: False
         output_dir : Path, optional
             Where to save segmentation derivatives. If None, uses
             bids_root/derivatives/totalsegmentator/
@@ -180,6 +199,7 @@ class BIDSProcessingPipeline:
                 device=device,
                 nr_thr_resamp=nr_thr_resamp,
                 nr_thr_saving=nr_thr_saving,
+                overwrite=overwrite,
             )
         else:
             # Multiple tasks
@@ -192,6 +212,7 @@ class BIDSProcessingPipeline:
                 device=device,
                 nr_thr_resamp=nr_thr_resamp,
                 nr_thr_saving=nr_thr_saving,
+                overwrite=overwrite,
             )
             success = all(results.values())
 

@@ -218,6 +218,7 @@ class CTSegmentationPipeline:
         device: str = "gpu",
         nr_thr_resamp: int = 1,
         nr_thr_saving: int = 6,
+        overwrite: bool = False,
         **kwargs,
     ) -> bool:
         """
@@ -270,6 +271,15 @@ class CTSegmentationPipeline:
         seg_output = output_dir / task
         seg_output.mkdir(exist_ok=True)
 
+        # Check if output already exists
+        if not overwrite:
+            stats_file = seg_output / "statistics.json"
+            # Check if segmentation outputs exist
+            existing_masks = list(seg_output.glob("*.nii*"))
+            if existing_masks or (statistics and stats_file.exists()):
+                logger.info(f"  ↷ Output already exists for task: {task} (use overwrite=True to re-run)")
+                return True
+
         logger.info(f"Running TotalSegmentator task: {task}")
         logger.info(f"  Input: {nifti_file}")
         logger.info(f"  Output: {seg_output}")
@@ -316,6 +326,7 @@ class CTSegmentationPipeline:
         device: str = "gpu",
         nr_thr_resamp: int = 1,
         nr_thr_saving: int = 6,
+        overwrite: bool = False,
         **kwargs,
     ) -> Dict[str, bool]:
         """
@@ -361,6 +372,7 @@ class CTSegmentationPipeline:
                 device=device,
                 nr_thr_resamp=nr_thr_resamp,
                 nr_thr_saving=nr_thr_saving,
+                overwrite=overwrite,
                 **kwargs,
             )
             results[task] = success

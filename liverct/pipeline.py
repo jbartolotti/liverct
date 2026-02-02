@@ -87,6 +87,8 @@ class BIDSProcessingPipeline:
         statistics: bool = True,
         license_number: Optional[str] = None,
         device: str = "gpu",
+        nr_thr_resamp: int = 1,
+        nr_thr_saving: int = 6,
         output_dir: Optional[Path] = None,
     ) -> bool:
         """
@@ -110,6 +112,10 @@ class BIDSProcessingPipeline:
             License key for premium models (e.g., tissue_types)
         device : str
             Device to use: "gpu" or "cpu"
+        nr_thr_resamp : int
+            Number of threads for resampling (lower to reduce memory)
+        nr_thr_saving : int
+            Number of threads for saving (lower to reduce memory)
         output_dir : Path, optional
             Where to save segmentation derivatives. If None, uses
             bids_root/derivatives/totalsegmentator/
@@ -172,6 +178,8 @@ class BIDSProcessingPipeline:
                 statistics=statistics,
                 license_number=license_number,
                 device=device,
+                nr_thr_resamp=nr_thr_resamp,
+                nr_thr_saving=nr_thr_saving,
             )
         else:
             # Multiple tasks
@@ -182,6 +190,8 @@ class BIDSProcessingPipeline:
                 statistics=statistics,
                 license_number=license_number,
                 device=device,
+                nr_thr_resamp=nr_thr_resamp,
+                nr_thr_saving=nr_thr_saving,
             )
             success = all(results.values())
 

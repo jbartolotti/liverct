@@ -216,6 +216,8 @@ class CTSegmentationPipeline:
         statistics: bool = True,
         license_number: Optional[str] = None,
         device: str = "gpu",
+        nr_thr_resamp: int = 1,
+        nr_thr_saving: int = 6,
         **kwargs,
     ) -> bool:
         """
@@ -237,6 +239,10 @@ class CTSegmentationPipeline:
             License key for premium models (e.g., tissue_types)
         device : str
             Device to use: "gpu" or "cpu"
+        nr_thr_resamp : int
+            Number of threads for resampling (lower to reduce memory)
+        nr_thr_saving : int
+            Number of threads for saving (lower to reduce memory)
         **kwargs
             Additional arguments to pass to totalsegmentator
 
@@ -269,6 +275,7 @@ class CTSegmentationPipeline:
         logger.info(f"  Output: {seg_output}")
         logger.info(f"  Statistics: {statistics}")
         logger.info(f"  Device: {device}")
+        logger.info(f"  Threads (resamp/saving): {nr_thr_resamp}/{nr_thr_saving}")
 
         try:
             # Run TotalSegmentator
@@ -279,6 +286,8 @@ class CTSegmentationPipeline:
                 statistics=statistics,
                 license_number=license_number,
                 device=device,
+                nr_thr_resamp=nr_thr_resamp,
+                nr_thr_saving=nr_thr_saving,
                 **kwargs,
             )
 
@@ -305,6 +314,8 @@ class CTSegmentationPipeline:
         statistics: bool = True,
         license_number: Optional[str] = None,
         device: str = "gpu",
+        nr_thr_resamp: int = 1,
+        nr_thr_saving: int = 6,
         **kwargs,
     ) -> Dict[str, bool]:
         """
@@ -325,6 +336,10 @@ class CTSegmentationPipeline:
             License key for premium models
         device : str
             Device to use: "gpu" or "cpu"
+        nr_thr_resamp : int
+            Number of threads for resampling (lower to reduce memory)
+        nr_thr_saving : int
+            Number of threads for saving (lower to reduce memory)
         **kwargs
             Additional arguments to pass to totalsegmentator
 
@@ -344,6 +359,8 @@ class CTSegmentationPipeline:
                 statistics=statistics,
                 license_number=license_number,
                 device=device,
+                nr_thr_resamp=nr_thr_resamp,
+                nr_thr_saving=nr_thr_saving,
                 **kwargs,
             )
             results[task] = success

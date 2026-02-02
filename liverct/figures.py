@@ -252,26 +252,39 @@ def create_label_overlay_montage(
 
     ct_img = nib.load(str(ct_file))
     ct_data = ct_img.get_fdata().astype(np.float32)
+    logger.info(f"CT image shape: {ct_data.shape}")
 
     # Load masks
     label_masks: Dict[str, np.ndarray] = {}
     mask_union = np.zeros(ct_data.shape, dtype=np.uint8)
     for label, mask_path in label_files.items():
-        mask_img = nib.load(str(mask_path))
-        mask_data = mask_img.get_fdata() > 0
-        label_masks[label] = mask_data
-        mask_union |= mask_data.astype(np.uint8)
+        try:
+            mask_img = nib.load(str(mask_path))
+            logger.info(f"  {label}: {mask_path.name} shape={mask_img.shape}")
+            if mask_img.shape != ct_data.shape:
+                logger.error(
+                    f"    ✗ Shape mismatch! Expected {ct_data.shape}, got {mask_img.shape}"
+                )
+                continue
+            mask_data = mask_img.get_fdata() > 0
+            label_masks[label] = mask_data
+            mask_union |= mask_data.astype(np.uint8)
+        except Exception as e:
+            logger.error(f"  ✗ Failed to load {label} ({mask_path.name}): {e}")
 
     if label_arrays:
         for label, mask_data in label_arrays.items():
-            if mask_data.shape != ct_data.shape:
-                logger.warning(
-                    f"Skipping label array with shape mismatch: {label}"
-                    f" (shape {mask_data.shape} != {ct_data.shape})"
-                )
-                continue
-            label_masks[label] = mask_data
-            mask_union |= mask_data.astype(np.uint8)
+            try:
+                logger.info(f"  {label} (composite): shape={mask_data.shape}")
+                if mask_data.shape != ct_data.shape:
+                    logger.error(
+                        f"    ✗ Shape mismatch! Expected {ct_data.shape}, got {mask_data.shape}"
+                    )
+                    continue
+                label_masks[label] = mask_data
+                mask_union |= mask_data.astype(np.uint8)
+            except Exception as e:
+                logger.error(f"  ✗ Failed to add {label}: {e}")
 
     # Slice selection
     slice_indices = _select_slices(mask_union, axis=axis, num_slices=num_slices)

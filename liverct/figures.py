@@ -55,15 +55,41 @@ def _normalize_session_label(session_label: Optional[str]) -> Optional[str]:
     return session_label if session_label.startswith("ses-") else f"ses-{session_label}"
 
 
-def _find_first_nifti(search_dir: Path) -> Optional[Path]:
+def _find_first_nifti(search_dir: Path, pattern: Optional[str] = None) -> Optional[Path]:
+    import re
     nifti_files = sorted(search_dir.glob("*.nii*"))
-    return nifti_files[0] if nifti_files else None
+    
+    if not nifti_files:
+        return None
+    
+    # If no pattern, return first file
+    if not pattern:
+        return nifti_files[0]
+    
+    # Try to match based on json sidecar SeriesDescription
+    for nifti_file in nifti_files:
+        json_file = nifti_file.with_suffix(".json")
+        if json_file.exists():
+            try:
+                import json
+                with open(json_file) as f:
+                    metadata = json.load(f)
+                    series_desc = metadata.get("SeriesDescription", "")
+                    if re.search(pattern, series_desc, re.IGNORECASE):
+                        return nifti_file
+            except Exception as e:
+                logger.debug(f"Could not read metadata for {nifti_file}: {e}")
+    
+    # Fall back to first file if no pattern match
+    logger.warning(f"No CT matched pattern in {search_dir}, using first file")
+    return nifti_files[0]
 
 
 def find_ct_nifti(
     bids_root: Path,
     subject_label: str,
     session_label: Optional[str] = None,
+    series_description_pattern: Optional[str] = None,
 ) -> Optional[Path]:
     subject_label = _normalize_subject_label(subject_label)
     session_label = _normalize_session_label(session_label)
@@ -72,18 +98,18 @@ def find_ct_nifti(
     if session_label:
         ct_dir = subject_dir / session_label / "ct"
         if ct_dir.exists():
-            return _find_first_nifti(ct_dir)
+            return _find_first_nifti(ct_dir, pattern=series_description_pattern)
         return None
 
     ct_dir = subject_dir / "ct"
     if ct_dir.exists():
-        return _find_first_nifti(ct_dir)
+        return _find_first_nifti(ct_dir, pattern=series_description_pattern)
 
     # Look for sessioned CTs if no top-level ct directory
     for ses_dir in sorted(subject_dir.glob("ses-*")):
         ct_dir = ses_dir / "ct"
         if ct_dir.exists():
-            ct_file = _find_first_nifti(ct_dir)
+            ct_file = _find_first_nifti(ct_dir, pattern=series_description_pattern)
             if ct_file:
                 return ct_file
 
@@ -361,13 +387,19 @@ def create_tissue_types_montage_from_bids(
     subject_label: str,
     session_label: Optional[str] = None,
     output_dir: Optional[Path] = None,
+    series_description_pattern: Optional[str] = None,
     include_skeletal: bool = True,
     **kwargs,
 ) -> Path:
     """
     Convenience wrapper to generate a tissue types montage from BIDS structure.
     """
-    ct_file = find_ct_nifti(bids_root, subject_label, session_label=session_label)
+    ct_file = find_ct_nifti(
+        bids_root,
+        subject_label,
+        session_label=session_label,
+        series_description_pattern=series_description_pattern,
+    )
     if not ct_file:
         raise FileNotFoundError(f"CT NIfTI not found for subject: {subject_label}")
 
@@ -416,6 +448,7 @@ def create_tissue_types_montages(
     subjects: Optional[Union[str, List[str]]] = None,
     session_label: Optional[str] = None,
     output_dir: Optional[Path] = None,
+    series_description_pattern: Optional[str] = None,
     include_skeletal: bool = True,
     **kwargs,
 ) -> Dict[str, Path]:
@@ -439,6 +472,7 @@ def create_tissue_types_montages(
                 subject_label=subject_label,
                 session_label=session_label,
                 output_dir=output_dir,
+                series_description_pattern=series_description_pattern,
                 include_skeletal=include_skeletal,
                 **kwargs,
             )

@@ -6,7 +6,7 @@ Coordinates multiple processing steps and handles subject/session iteration.
 
 import logging
 from pathlib import Path
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Callable, Dict, Any, List, Union
 from .segmentation import CTSegmentationPipeline
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,10 @@ class BIDSProcessingPipeline:
         subject_label: str,
         session_label: Optional[str] = None,
         series_description_pattern: Optional[str] = None,
-        segmentation_model: str = "3d_fullres",
+        tasks: Union[str, List[str]] = "total",
+        statistics: bool = True,
+        license_number: Optional[str] = None,
+        device: str = "gpu",
         output_dir: Optional[Path] = None,
     ) -> bool:
         """
@@ -97,8 +100,16 @@ class BIDSProcessingPipeline:
             Session identifier (with or without "ses-" prefix)
         series_description_pattern : str, optional
             Regex pattern to match series description
-        segmentation_model : str
-            TotalSegmentator model to use
+        tasks : str or list of str
+            TotalSegmentator task(s) to run.
+            Single task: "total" or
+            Multiple tasks: ["total", "tissue_types", "liver_segments", "abdominal_muscles"]
+        statistics : bool
+            Whether to generate volume and intensity statistics
+        license_number : str, optional
+            License key for premium models (e.g., tissue_types)
+        device : str
+            Device to use: "gpu" or "cpu"
         output_dir : Path, optional
             Where to save segmentation derivatives. If None, uses
             bids_root/derivatives/totalsegmentator/
@@ -106,7 +117,7 @@ class BIDSProcessingPipeline:
         Returns
         -------
         bool
-            True if segmentation succeeded, False otherwise
+            True if all segmentations succeeded, False otherwise
         """
         subject_id = subject_label.replace("sub-", "")
         display_id = f"{subject_id}"
@@ -151,16 +162,34 @@ class BIDSProcessingPipeline:
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Run segmentation
-        success = self.segmentation.run_segmentation(
-            ct_file, output_dir, model=segmentation_model
-        )
+        # Run segmentation(s)
+        if isinstance(tasks, str):
+            # Single task
+            success = self.segmentation.run_segmentation(
+                ct_file,
+                output_dir,
+                task=tasks,
+                statistics=statistics,
+                license_number=license_number,
+                device=device,
+            )
+        else:
+            # Multiple tasks
+            results = self.segmentation.run_multiple_segmentations(
+                ct_file,
+                output_dir,
+                tasks=tasks,
+                statistics=statistics,
+                license_number=license_number,
+                device=device,
+            )
+            success = all(results.values())
 
         if success:
-            logger.info(f"  ✓ Segmentation completed successfully")
+            logger.info(f"  ✓ All segmentations completed successfully")
             return True
         else:
-            logger.error(f"  ✗ Segmentation failed")
+            logger.error(f"  ✗ One or more segmentations failed")
             return False
 
     @staticmethod

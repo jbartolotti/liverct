@@ -8,7 +8,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -212,7 +212,11 @@ class CTSegmentationPipeline:
         self,
         nifti_file: Path,
         output_dir: Path,
-        model: str = "3d_fullres",
+        task: str = "total",
+        statistics: bool = True,
+        license_number: Optional[str] = None,
+        device: str = "gpu",
+        **kwargs,
     ) -> bool:
         """
         Run TotalSegmentator segmentation on CT image.
@@ -223,15 +227,132 @@ class CTSegmentationPipeline:
             Path to CT NIfTI image
         output_dir : Path
             Directory to save segmentation outputs
-        model : str
-            TotalSegmentator model to use (placeholder)
+        task : str
+            TotalSegmentator task/model to use.
+            Options: "total" (default), "tissue_types", "liver_segments",
+            "abdominal_muscles", etc.
+        statistics : bool
+            Whether to generate volume and intensity statistics
+        license_number : str, optional
+            License key for premium models (e.g., tissue_types)
+        device : str
+            Device to use: "gpu" or "cpu"
+        **kwargs
+            Additional arguments to pass to totalsegmentator
 
         Returns
         -------
         bool
             True if segmentation succeeded, False otherwise
         """
-        logger.info(f"[PLACEHOLDER] Would run TotalSegmentator with model={model}")
+        try:
+            from totalsegmentator.python_api import totalsegmentator
+        except ImportError:
+            logger.error(
+                "TotalSegmentator not installed. Install with: pip install TotalSegmentator"
+            )
+            return False
+
+        if nib is None:
+            logger.error("nibabel not installed. Install with: pip install nibabel")
+            return False
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Set up output paths
+        seg_output = output_dir / task
+        seg_output.mkdir(exist_ok=True)
+
+        logger.info(f"Running TotalSegmentator task: {task}")
         logger.info(f"  Input: {nifti_file}")
-        logger.info(f"  Output: {output_dir}")
-        return True
+        logger.info(f"  Output: {seg_output}")
+        logger.info(f"  Statistics: {statistics}")
+        logger.info(f"  Device: {device}")
+
+        try:
+            # Run TotalSegmentator
+            totalsegmentator(
+                input=str(nifti_file),
+                output=str(seg_output),
+                task=task,
+                statistics=statistics,
+                license_number=license_number,
+                device=device,
+                **kwargs,
+            )
+
+            # Check if output was created
+            if statistics:
+                stats_file = seg_output / "statistics.json"
+                if stats_file.exists():
+                    logger.info(f"  ✓ Statistics saved to: {stats_file}")
+                else:
+                    logger.warning(f"  ⚠ Statistics file not found: {stats_file}")
+
+            logger.info(f"  ✓ Segmentation completed for task: {task}")
+            return True
+
+        except Exception as e:
+            logger.error(f"  ✗ Segmentation failed for task {task}: {e}")
+            return False
+
+    def run_multiple_segmentations(
+        self,
+        nifti_file: Path,
+        output_dir: Path,
+        tasks: List[str],
+        statistics: bool = True,
+        license_number: Optional[str] = None,
+        device: str = "gpu",
+        **kwargs,
+    ) -> Dict[str, bool]:
+        """
+        Run multiple TotalSegmentator tasks on the same CT image.
+
+        Parameters
+        ----------
+        nifti_file : Path
+            Path to CT NIfTI image
+        output_dir : Path
+            Directory to save segmentation outputs
+        tasks : list of str
+            List of TotalSegmentator tasks to run.
+            Examples: ["total", "tissue_types", "liver_segments", "abdominal_muscles"]
+        statistics : bool
+            Whether to generate statistics for each task
+        license_number : str, optional
+            License key for premium models
+        device : str
+            Device to use: "gpu" or "cpu"
+        **kwargs
+            Additional arguments to pass to totalsegmentator
+
+        Returns
+        -------
+        dict
+            Dictionary mapping task names to success/failure (bool)
+        """
+        results = {}
+
+        for task in tasks:
+            logger.info(f"\n--- Running task: {task} ---")
+            success = self.run_segmentation(
+                nifti_file=nifti_file,
+                output_dir=output_dir,
+                task=task,
+                statistics=statistics,
+                license_number=license_number,
+                device=device,
+                **kwargs,
+            )
+            results[task] = success
+
+        # Summary
+        successful = sum(1 for v in results.values() if v)
+        failed = len(results) - successful
+        logger.info(f"\n--- Segmentation summary ---")
+        logger.info(f"  Successful tasks: {successful}/{len(tasks)}")
+        logger.info(f"  Failed tasks: {failed}/{len(tasks)}")
+
+        return results

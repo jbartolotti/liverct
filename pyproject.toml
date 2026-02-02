@@ -9,7 +9,7 @@ description = "A Python library for liver CT image processing and analysis"
 readme = "README.md"
 requires-python = ">=3.8"
 authors = [
-    {name = "jbartolotti", email = "your.email@example.com"},
+    {name = "jbartolotti", email = "jbartolotti2@kumc.edu"},
 ]
 keywords = ["liver", "ct", "imaging", "medical"]
 classifiers = [

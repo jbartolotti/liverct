@@ -23,14 +23,26 @@ DEFAULT_LABEL_COLORS = {
 
 LABEL_PATTERNS = {
     "SAT": ["subcutaneous_fat", "subcutaneous_adipose", "subcutaneous", "sat"],
-    "VAT": ["visceral_fat", "visceral_adipose", "visceral", "vat"],
-    "Muscle": ["muscle"],
-    "Skeletal": ["skeletal_muscle", "skeletal_tissue", "skeleton", "bone"],
+    "VAT": ["visceral_fat", "visceral_adipose", "visceral", "vat", "torso_fat"],
+    "Muscle": ["skeletal_muscle", "muscle"],
 }
 
-LABEL_EXCLUDES = {
-    "Muscle": ["skeletal"],
-}
+TOTAL_BONE_PATTERNS = [
+    "vertebra",
+    "rib",
+    "sternum",
+    "scapula",
+    "clavicle",
+    "pelvis",
+    "sacrum",
+    "femur",
+    "humerus",
+    "skull",
+    "mandible",
+    "patella",
+    "tibia",
+    "fibula",
+]
 
 
 def _normalize_subject_label(subject_label: str) -> str:
@@ -92,6 +104,20 @@ def find_tissue_types_dir(
     return base_dir / "tissue_types"
 
 
+def find_total_dir(
+    bids_root: Path,
+    subject_label: str,
+    session_label: Optional[str] = None,
+) -> Path:
+    subject_label = _normalize_subject_label(subject_label)
+    session_label = _normalize_session_label(session_label)
+
+    base_dir = Path(bids_root) / "derivatives" / "totalsegmentator" / subject_label
+    if session_label:
+        base_dir = base_dir / session_label
+    return base_dir / "total"
+
+
 def _match_label_file(
     files: List[Path],
     patterns: List[str],
@@ -115,7 +141,7 @@ def find_tissue_type_label_files(seg_dir: Path) -> Dict[str, Path]:
 
     label_files: Dict[str, Path] = {}
     for label, patterns in LABEL_PATTERNS.items():
-        match = _match_label_file(files, patterns, LABEL_EXCLUDES.get(label))
+        match = _match_label_file(files, patterns)
         if match:
             label_files[label] = match
         else:
@@ -125,6 +151,44 @@ def find_tissue_type_label_files(seg_dir: Path) -> Dict[str, Path]:
         raise FileNotFoundError(f"No tissue type labels matched in: {seg_dir}")
 
     return label_files
+
+
+def find_total_bone_files(total_dir: Path) -> List[Path]:
+    if not total_dir.exists():
+        raise FileNotFoundError(f"Total segmentation directory not found: {total_dir}")
+
+    files = sorted(total_dir.glob("*.nii*"))
+    if not files:
+        raise FileNotFoundError(f"No segmentation files found in: {total_dir}")
+
+    bone_files: List[Path] = []
+    for f in files:
+        name = f.name.lower()
+        if any(p in name for p in TOTAL_BONE_PATTERNS):
+            bone_files.append(f)
+
+    if not bone_files:
+        raise FileNotFoundError(f"No bone masks matched in: {total_dir}")
+
+    return bone_files
+
+
+def build_composite_mask_from_files(
+    mask_files: List[Path],
+    reference_shape: Tuple[int, ...],
+) -> np.ndarray:
+    composite = np.zeros(reference_shape, dtype=bool)
+    for mask_path in mask_files:
+        mask_img = nib.load(str(mask_path))
+        mask_data = mask_img.get_fdata() > 0
+        if mask_data.shape != reference_shape:
+            logger.warning(
+                f"Skipping mask with shape mismatch: {mask_path.name}"
+                f" (shape {mask_data.shape} != {reference_shape})"
+            )
+            continue
+        composite |= mask_data
+    return composite
 
 
 def _select_slices(mask_union: np.ndarray, axis: int, num_slices: int) -> List[int]:
@@ -153,6 +217,7 @@ def create_label_overlay_montage(
     alpha: float = 0.35,
     dpi: int = 200,
     label_colors: Optional[Dict[str, str]] = None,
+    label_arrays: Optional[Dict[str, np.ndarray]] = None,
 ) -> Path:
     """
     Create montage of CT slices with label overlays.
@@ -196,6 +261,17 @@ def create_label_overlay_montage(
         mask_data = mask_img.get_fdata() > 0
         label_masks[label] = mask_data
         mask_union |= mask_data.astype(np.uint8)
+
+    if label_arrays:
+        for label, mask_data in label_arrays.items():
+            if mask_data.shape != ct_data.shape:
+                logger.warning(
+                    f"Skipping label array with shape mismatch: {label}"
+                    f" (shape {mask_data.shape} != {ct_data.shape})"
+                )
+                continue
+            label_masks[label] = mask_data
+            mask_union |= mask_data.astype(np.uint8)
 
     # Slice selection
     slice_indices = _select_slices(mask_union, axis=axis, num_slices=num_slices)
@@ -249,9 +325,10 @@ def create_label_overlay_montage(
         axes[r, c].axis("off")
 
     # Legend
+    legend_labels = list(label_masks.keys())
     legend_patches = [
         Patch(color=label_colors[label], label=label)
-        for label in label_files.keys()
+        for label in legend_labels
         if label in label_colors
     ]
     if legend_patches:
@@ -271,6 +348,7 @@ def create_tissue_types_montage_from_bids(
     subject_label: str,
     session_label: Optional[str] = None,
     output_dir: Optional[Path] = None,
+    include_skeletal: bool = True,
     **kwargs,
 ) -> Path:
     """
@@ -283,6 +361,23 @@ def create_tissue_types_montage_from_bids(
     seg_dir = find_tissue_types_dir(bids_root, subject_label, session_label=session_label)
     label_files = find_tissue_type_label_files(seg_dir)
 
+    label_arrays: Dict[str, np.ndarray] = {}
+    if include_skeletal:
+        try:
+            total_dir = find_total_dir(bids_root, subject_label, session_label=session_label)
+            bone_files = find_total_bone_files(total_dir)
+            ct_img = nib.load(str(ct_file))
+            skeletal_mask = build_composite_mask_from_files(
+                bone_files,
+                reference_shape=ct_img.shape,
+            )
+            if skeletal_mask.any():
+                label_arrays["Skeletal"] = skeletal_mask
+            else:
+                logger.warning(f"Composite skeletal mask is empty for {subject_label}")
+        except Exception as e:
+            logger.warning(f"Skipping skeletal composite for {subject_label}: {e}")
+
     if output_dir is None:
         output_dir = seg_dir / "figures"
 
@@ -294,7 +389,13 @@ def create_tissue_types_montage_from_bids(
     output_name += "_tissue_types_montage.png"
 
     output_png = Path(output_dir) / output_name
-    return create_label_overlay_montage(ct_file, label_files, output_png, **kwargs)
+    return create_label_overlay_montage(
+        ct_file,
+        label_files,
+        output_png,
+        label_arrays=label_arrays if label_arrays else None,
+        **kwargs,
+    )
 
 
 def create_tissue_types_montages(
@@ -302,6 +403,7 @@ def create_tissue_types_montages(
     subjects: Optional[Union[str, List[str]]] = None,
     session_label: Optional[str] = None,
     output_dir: Optional[Path] = None,
+    include_skeletal: bool = True,
     **kwargs,
 ) -> Dict[str, Path]:
     """
@@ -324,6 +426,7 @@ def create_tissue_types_montages(
                 subject_label=subject_label,
                 session_label=session_label,
                 output_dir=output_dir,
+                include_skeletal=include_skeletal,
                 **kwargs,
             )
             results[subject_label] = output

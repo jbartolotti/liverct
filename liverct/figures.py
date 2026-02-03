@@ -21,6 +21,18 @@ DEFAULT_LABEL_COLORS = {
     "Skeletal": "#169C83",     # skeletal tissue/bone
 }
 
+# Organ-specific colors
+ORGAN_COLORS = {
+    "liver": "#8B0000",        # dark red
+    "pancreas": "#FFD700",     # gold
+    "spleen": "#9370DB",       # medium purple
+    "kidney_left": "#FF69B4",  # hot pink
+    "kidney_right": "#FF69B4", # hot pink
+    "lungs": "#87CEEB",        # sky blue
+    "prostate": "#FF8C00",     # dark orange
+    "heart": "#DC143C",        # crimson
+}
+
 LABEL_PATTERNS = {
     "SAT": ["subcutaneous_fat", "subcutaneous_adipose", "subcutaneous", "sat"],
     "VAT": ["visceral_fat", "visceral_adipose", "visceral", "vat", "torso_fat"],
@@ -1300,3 +1312,311 @@ def create_vertebrae_cross_subject_montage(
 
     logger.info(f"Saved cross-subject montage: {output_png}")
     return output_png
+
+
+def create_organ_montage(
+    bids_root: Path,
+    subject_label: str,
+    organ: str,
+    session_label: Optional[str] = None,
+    num_slices: int = 12,
+    output_dir: Optional[Path] = None,
+    series_description_pattern: Optional[str] = None,
+    include_skeletal: bool = True,
+    window: Tuple[int, int] = (-200, 250),
+    alpha: float = 0.35,
+    dpi: int = 200,
+    label_colors: Optional[Dict[str, str]] = None,
+) -> Path:
+    """
+    Create organ-specific montage with Z extent determined by organ mask.
+
+    Automatically determines the superior and inferior extent of the organ
+    and creates a montage spanning that range.
+
+    Parameters
+    ----------
+    bids_root : Path
+        Root BIDS directory
+    subject_label : str
+        Subject label (with or without "sub-" prefix)
+    organ : str
+        Organ name (e.g., "liver", "pancreas", "spleen", "kidney_left", "kidney_right",
+        "lungs", "prostate", "heart")
+    session_label : str, optional
+        Session label
+    num_slices : int
+        Number of slices in montage
+    output_dir : Path, optional
+        Output directory for montage
+    series_description_pattern : str, optional
+        Pattern to match CT series
+    include_skeletal : bool
+        Include skeletal composite overlay
+    window : tuple
+        HU window (min, max)
+    alpha : float
+        Overlay alpha
+    dpi : int
+        Output DPI
+    label_colors : dict, optional
+        Custom label colors (will be merged with defaults and organ color)
+
+    Returns
+    -------
+    Path
+        Output montage file path
+    """
+    bids_root = Path(bids_root)
+    subject_label = subject_label if subject_label.startswith("sub-") else f"sub-{subject_label}"
+
+    # Setup colors
+    colors = dict(DEFAULT_LABEL_COLORS)
+    if label_colors:
+        colors.update(label_colors)
+
+    # Add organ to colors if not already present
+    organ_display = organ.replace("_", " ")
+    if organ not in colors:
+        if organ in ORGAN_COLORS:
+            colors[organ] = ORGAN_COLORS[organ]
+        else:
+            # Fallback color
+            colors[organ] = "#808080"  # gray
+
+    logger.info(f"Creating organ montage: {subject_label} - {organ}")
+
+    # Find CT file
+    ct_file = find_ct_nifti(
+        bids_root,
+        subject_label,
+        session_label=session_label,
+        series_description_pattern=series_description_pattern,
+    )
+    if not ct_file:
+        raise FileNotFoundError(f"CT not found for {subject_label}")
+
+    # Load CT data
+    ct_img = nib.load(str(ct_file))
+    ct_data = ct_img.get_fdata().astype(np.float32)
+
+    # Find organ mask file in total directory
+    total_dir = find_total_dir(bids_root, subject_label, session_label)
+    
+    # Map organ names to file patterns
+    organ_file_patterns = {
+        "liver": "liver.nii.gz",
+        "pancreas": "pancreas.nii.gz",
+        "spleen": "spleen.nii.gz",
+        "kidney_left": "kidney_left.nii.gz",
+        "kidney_right": "kidney_right.nii.gz",
+        "lungs": "lungs.nii.gz",
+        "prostate": "prostate.nii.gz",
+        "heart": "heart.nii.gz",
+    }
+
+    if organ not in organ_file_patterns:
+        raise ValueError(f"Unknown organ: {organ}. Available: {list(organ_file_patterns.keys())}")
+
+    organ_file = total_dir / organ_file_patterns[organ]
+    if not organ_file.exists():
+        raise FileNotFoundError(f"Organ segmentation not found: {organ_file}")
+
+    # Load organ mask and determine Z extent
+    organ_img = nib.load(str(organ_file))
+    organ_mask = organ_img.get_fdata() > 0
+
+    # Find Z extent (axis 2 for axial)
+    axes = (0, 1)  # Sum over X and Y to get Z extent
+    z_sums = organ_mask.sum(axis=axes)
+    z_indices = np.where(z_sums > 0)[0]
+
+    if z_indices.size == 0:
+        raise ValueError(f"Organ mask is empty: {organ}")
+
+    z_min = int(z_indices.min())
+    z_max = int(z_indices.max())
+    logger.info(f"  Organ extent: slices {z_min}-{z_max}")
+
+    # Select slices within organ extent
+    slice_indices = np.linspace(z_min, z_max, num_slices, dtype=int)
+    slice_indices = np.unique(slice_indices)
+
+    # Load tissue type masks
+    seg_dir = find_tissue_types_dir(bids_root, subject_label, session_label=session_label)
+    label_files = find_tissue_type_label_files(seg_dir)
+
+    label_masks: Dict[str, np.ndarray] = {}
+    for label, mask_path in label_files.items():
+        try:
+            mask_img = nib.load(str(mask_path))
+            if mask_img.shape != ct_data.shape:
+                logger.debug(f"  Shape mismatch for {label}, skipping")
+                continue
+            label_masks[label] = mask_img.get_fdata() > 0
+        except Exception as e:
+            logger.debug(f"  Failed to load {label}: {e}")
+
+    # Add skeletal composite if requested
+    if include_skeletal:
+        try:
+            skeletal_file = seg_dir / "skeletal_composite.nii.gz"
+            if skeletal_file.exists():
+                skeletal_img = nib.load(str(skeletal_file))
+                if skeletal_img.shape == ct_data.shape:
+                    skeletal_mask = skeletal_img.get_fdata() > 0
+                    if skeletal_mask.any():
+                        label_masks["Skeletal"] = skeletal_mask
+        except Exception as e:
+            logger.debug(f"  Failed to load skeletal composite: {e}")
+
+    # Add organ mask
+    label_masks[organ] = organ_mask
+
+    # Create montage
+    cols = 4
+    rows = int(np.ceil(len(slice_indices) / cols))
+
+    vmin, vmax = window
+
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4), dpi=dpi)
+    axes = np.atleast_2d(axes)
+
+    for i, slice_idx in enumerate(slice_indices):
+        r, c = divmod(i, cols)
+        ax = axes[r, c]
+        ax.axis("off")
+
+        ct_slice = ct_data[:, :, slice_idx]
+        masks = {k: v[:, :, slice_idx] for k, v in label_masks.items()}
+
+        # Window and normalize
+        ct_slice = np.clip(ct_slice, vmin, vmax)
+        ct_slice = (ct_slice - vmin) / float(vmax - vmin)
+
+        ax.imshow(ct_slice.T, cmap="gray", origin="lower")
+
+        # Create RGBA overlay
+        overlay = np.zeros((*ct_slice.shape, 4), dtype=np.float32)
+        
+        # Draw tissue types first (background), then organ on top
+        for label in ["SAT", "VAT", "Muscle", "Skeletal"]:
+            if label in masks and label in colors:
+                color = mcolors.to_rgba(colors[label], alpha=alpha)
+                overlay[masks[label].T > 0] = color
+
+        # Draw organ with higher alpha on top
+        if organ in masks and organ in colors:
+            organ_alpha = min(1.0, alpha * 1.5)  # Slightly more opaque
+            color = mcolors.to_rgba(colors[organ], alpha=organ_alpha)
+            overlay[masks[organ].T > 0] = color
+
+        ax.imshow(overlay, origin="lower")
+        ax.set_title(f"Slice {slice_idx}")
+
+    # Turn off unused axes
+    for j in range(len(slice_indices), rows * cols):
+        r, c = divmod(j, cols)
+        axes[r, c].axis("off")
+
+    # Legend
+    legend_labels = [
+        l for l in ["SAT", "VAT", "Muscle", "Skeletal", organ]
+        if l in label_masks
+    ]
+    legend_patches = [
+        Patch(color=colors[label], label=label.replace("_", " "))
+        for label in legend_labels
+        if label in colors
+    ]
+
+    if legend_patches:
+        fig.legend(handles=legend_patches, loc="lower center", ncol=5)
+
+    # Determine output path
+    if output_dir is None:
+        output_dir = seg_dir / "figures"
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create filename
+    subject_id = subject_label.replace("sub-", "")
+    output_name = f"{subject_id}_{organ}_montage.png"
+    output_png = output_dir / output_name
+
+    fig.tight_layout(rect=[0, 0.05, 1, 1])
+    fig.savefig(output_png, bbox_inches="tight")
+    plt.close(fig)
+
+    logger.info(f"  ✓ Saved organ montage: {output_png}")
+    return output_png
+
+
+def create_organ_montages(
+    bids_root: Path,
+    subject_label: str,
+    organs: Union[List[str], str] = "all",
+    session_label: Optional[str] = None,
+    **kwargs,
+) -> Dict[str, Path]:
+    """
+    Create organ-specific montages for a single subject.
+
+    Parameters
+    ----------
+    bids_root : Path
+        Root BIDS directory
+    subject_label : str
+        Subject label
+    organs : str or list, optional
+        Organs to generate montages for. Options:
+        - "all": liver, pancreas, spleen, kidneys, lungs, prostate, heart
+        - List of specific organs: ["liver", "pancreas", "spleen"]
+        Default: "all"
+    session_label : str, optional
+        Session label
+    **kwargs
+        Additional arguments passed to create_organ_montage
+
+    Returns
+    -------
+    dict
+        Mapping of organ name to output file path
+    """
+    # Define all available organs
+    all_organs = [
+        "liver",
+        "pancreas",
+        "spleen",
+        "kidney_left",
+        "kidney_right",
+        "lungs",
+        "prostate",
+        "heart",
+    ]
+
+    # Determine which organs to process
+    if organs == "all":
+        organs_to_process = all_organs
+    elif isinstance(organs, str):
+        organs_to_process = [organs]
+    else:
+        organs_to_process = list(organs)
+
+    logger.info(f"Creating organ montages for {subject_label}: {organs_to_process}")
+
+    results = {}
+    for organ in organs_to_process:
+        try:
+            output = create_organ_montage(
+                bids_root=bids_root,
+                subject_label=subject_label,
+                organ=organ,
+                session_label=session_label,
+                **kwargs,
+            )
+            results[organ] = output
+        except Exception as e:
+            logger.error(f"  ✗ Failed to create {organ} montage: {e}")
+
+    return results

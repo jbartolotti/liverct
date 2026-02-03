@@ -353,6 +353,112 @@ def build_composite_mask_from_files(
     return composite
 
 
+def _load_organ_masks(
+    bids_root: Path,
+    subject_label: str,
+    organs: Union[List[str], str],
+    ct_shape: Tuple[int, ...],
+    session_label: Optional[str] = None,
+) -> Dict[str, np.ndarray]:
+    """
+    Load organ masks from total directory.
+
+    Parameters
+    ----------
+    bids_root : Path
+        Root BIDS directory
+    subject_label : str
+        Subject label
+    organs : str or list
+        "all" or list of specific organs
+    ct_shape : tuple
+        Reference CT shape for validation
+    session_label : str, optional
+        Session label
+
+    Returns
+    -------
+    dict
+        Mapping of organ name to mask array
+    """
+    # Define available organs and their file patterns
+    organ_file_patterns = {
+        "liver": ["liver.nii.gz"],
+        "pancreas": ["pancreas.nii.gz"],
+        "spleen": ["spleen.nii.gz"],
+        "kidneys": ["kidney_left.nii.gz", "kidney_right.nii.gz"],
+        "lungs": [
+            "lung_upper_lobe_left.nii.gz",
+            "lung_lower_lobe_left.nii.gz",
+            "lung_upper_lobe_right.nii.gz",
+            "lung_middle_lobe_right.nii.gz",
+            "lung_lower_lobe_right.nii.gz",
+        ],
+        "prostate": ["prostate.nii.gz"],
+        "heart": ["heart.nii.gz"],
+    }
+
+    # Determine which organs to load
+    if organs == "all":
+        organs_to_load = list(organ_file_patterns.keys())
+    elif isinstance(organs, str):
+        organs_to_load = [organs]
+    else:
+        organs_to_load = list(organs)
+
+    # Find total directory
+    total_dir = find_total_dir(bids_root, subject_label, session_label)
+    if not total_dir.exists():
+        logger.warning(f"Total directory not found: {total_dir}")
+        return {}
+
+    organ_masks = {}
+    for organ in organs_to_load:
+        if organ not in organ_file_patterns:
+            logger.warning(f"Unknown organ: {organ}")
+            continue
+
+        # Get file patterns for this organ
+        patterns = organ_file_patterns[organ]
+        organ_files = [total_dir / pattern for pattern in patterns]
+        existing_files = [f for f in organ_files if f.exists()]
+
+        if not existing_files:
+            logger.debug(f"  No files found for {organ}")
+            continue
+
+        # Load and combine masks
+        combined_mask = np.zeros(ct_shape, dtype=bool)
+        for organ_file in existing_files:
+            try:
+                organ_img = nib.load(str(organ_file))
+                organ_data = organ_img.get_fdata() > 0
+
+                # Validate shape
+                if organ_data.shape != ct_shape:
+                    logger.warning(
+                        f"  Shape mismatch for {organ_file.name}: "
+                        f"{organ_data.shape} vs {ct_shape}, clipping"
+                    )
+                    # Clip to CT shape
+                    organ_data_clipped = np.zeros(ct_shape, dtype=bool)
+                    x_max = min(organ_data.shape[0], ct_shape[0])
+                    y_max = min(organ_data.shape[1], ct_shape[1])
+                    z_max = min(organ_data.shape[2], ct_shape[2])
+                    organ_data_clipped[:x_max, :y_max, :z_max] = organ_data[:x_max, :y_max, :z_max]
+                    organ_data = organ_data_clipped
+
+                combined_mask |= organ_data
+            except Exception as e:
+                logger.warning(f"  Failed to load {organ_file.name}: {e}")
+
+        if combined_mask.any():
+            organ_masks[organ] = combined_mask
+            logger.debug(f"  Loaded {organ}")
+
+    return organ_masks
+
+
 def create_and_save_skeletal_composite(
     bids_root: Path,
     subject_label: str,
@@ -711,6 +817,7 @@ def create_tissue_types_montage_from_bids(
     output_dir: Optional[Path] = None,
     series_description_pattern: Optional[str] = None,
     include_skeletal: bool = True,
+    include_organs: Union[List[str], str, None] = None,
     superior_limit: Optional[str] = None,
     inferior_limit: Optional[str] = None,
     **kwargs,
@@ -732,6 +839,11 @@ def create_tissue_types_montage_from_bids(
         Pattern to match CT series
     include_skeletal : bool
         Include skeletal composite overlay
+    include_organs : str, list, or None
+        Organs to include as overlays. Options:
+        - None: No organs (default)
+        - "all": All available organs
+        - List of specific organs: ["liver", "pancreas", "spleen"]
     superior_limit : str, optional
         Superior anatomical limit (e.g., "C1", "T1"). None = no limit.
     inferior_limit : str, optional
@@ -789,6 +901,24 @@ def create_tissue_types_montage_from_bids(
         except Exception as e:
             logger.warning(f"Skipping skeletal composite for {subject_label}: {e}")
 
+    # Load organ masks if requested
+    if include_organs is not None:
+        try:
+            ct_img = nib.load(str(ct_file))
+            organ_masks = _load_organ_masks(
+                bids_root,
+                subject_label,
+                include_organs,
+                ct_img.shape,
+                session_label=session_label,
+            )
+            # Add organs to label_arrays with colors from ORGAN_COLORS
+            for organ_name, organ_mask in organ_masks.items():
+                label_arrays[organ_name] = organ_mask
+                logger.info(f"Added {organ_name} to montage")
+        except Exception as e:
+            logger.warning(f"Skipping organ overlays for {subject_label}: {e}")
+
     if output_dir is None:
         # Place figures at subject level, not within tissue_types
         base_dir = Path(bids_root) / "derivatives" / "totalsegmentator" / subject_label
@@ -817,11 +947,17 @@ def create_tissue_types_montage_from_bids(
         )
 
     output_png = Path(output_dir) / output_name
+    
+    # Merge organ colors into label colors
+    label_colors = dict(DEFAULT_LABEL_COLORS)
+    label_colors.update(ORGAN_COLORS)
+    
     return create_label_overlay_montage(
         ct_file,
         label_files,
         output_png,
         label_arrays=label_arrays if label_arrays else None,
+        label_colors=label_colors,
         z_range=z_range,
         **kwargs,
     )
@@ -834,6 +970,7 @@ def create_tissue_types_montages(
     output_dir: Optional[Path] = None,
     series_description_pattern: Optional[str] = None,
     include_skeletal: bool = True,
+    include_organs: Union[List[str], str, None] = None,
     superior_limit: Optional[str] = None,
     inferior_limit: Optional[str] = None,
     **kwargs,
@@ -855,6 +992,8 @@ def create_tissue_types_montages(
         Pattern to match CT series
     include_skeletal : bool
         Include skeletal composite overlay
+    include_organs : str, list, or None
+        Organs to include as overlays (None, "all", or list of organs)
     superior_limit : str, optional
         Superior anatomical limit (e.g., "C1", "T1").
     inferior_limit : str, optional
@@ -886,6 +1025,7 @@ def create_tissue_types_montages(
                 output_dir=output_dir,
                 series_description_pattern=series_description_pattern,
                 include_skeletal=include_skeletal,
+                include_organs=include_organs,
                 superior_limit=superior_limit,
                 inferior_limit=inferior_limit,
                 **kwargs,
@@ -1121,6 +1261,7 @@ def create_vertebrae_cross_subject_montage(
     output_dir: Optional[Path] = None,
     series_description_pattern: Optional[str] = None,
     include_skeletal: bool = True,
+    include_organs: Union[List[str], str, None] = None,
     window: Tuple[int, int] = (-200, 250),
     alpha: float = 0.35,
     dpi: int = 200,
@@ -1149,6 +1290,8 @@ def create_vertebrae_cross_subject_montage(
         Pattern to match CT series
     include_skeletal : bool
         Include skeletal composite overlay
+    include_organs : str, list, or None
+        Organs to include as overlays (None, "all", or list of organs)
     window : tuple
         HU window (min, max)
     alpha : float
@@ -1168,8 +1311,12 @@ def create_vertebrae_cross_subject_montage(
     import csv
 
     bids_root = Path(bids_root)
-    label_colors = label_colors or DEFAULT_LABEL_COLORS
-
+    
+    # Merge default colors with organ colors
+    if label_colors is None:
+        label_colors = dict(DEFAULT_LABEL_COLORS)
+        label_colors.update(ORGAN_COLORS)
+    
     # Normalize subjects list
     if isinstance(subjects, str):
         subject_list = [subjects]
@@ -1906,7 +2053,10 @@ def create_liver_segments_montage(
         # Load all segments and assign colors
         segment_masks = {}
         for i, seg_file in enumerate(segment_files):
-            seg_num = int(seg_file.stem.split("_")[-1])  # Extract segment number
+            # Extract segment number from filename (handle .nii.gz double extension)
+            # liver_segment_1.nii.gz -> extract "1"
+            filename = seg_file.name.replace(".nii.gz", "").replace(".nii", "")
+            seg_num = int(filename.split("_")[-1])
             seg_nifti = nib.load(seg_file)
             seg_data = seg_nifti.get_fdata()
 

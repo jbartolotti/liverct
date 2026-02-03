@@ -1892,7 +1892,12 @@ def create_liver_segments_montage(
 
         # Use first segment file to find matching CT
         first_seg_file = segment_files[0]
-        ct_file = find_ct_matching_segmentation(first_seg_file, bids_root, series_description_pattern)
+        ct_file = find_ct_matching_segmentation(
+            bids_root=bids_root,
+            subject_label=subject_label,
+            reference_seg_path=first_seg_file,
+            session_label=session_label,
+        )
 
         # Load CT
         ct_nifti = nib.load(ct_file)

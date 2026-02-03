@@ -1426,6 +1426,15 @@ def create_organ_montage(
     organ_img = nib.load(str(organ_file))
     organ_mask = organ_img.get_fdata() > 0
 
+    # Validate shapes match
+    if organ_mask.shape != ct_data.shape:
+        logger.warning(
+            f"  Shape mismatch: organ {organ_mask.shape} vs CT {ct_data.shape}. "
+            f"Attempting to use CT dimensions."
+        )
+        # Clip organ_mask to match CT shape if possible
+        organ_mask = organ_mask[:ct_data.shape[0], :ct_data.shape[1], :ct_data.shape[2]]
+
     # Find Z extent (axis 2 for axial)
     axes = (0, 1)  # Sum over X and Y to get Z extent
     z_sums = organ_mask.sum(axis=axes)
@@ -1436,7 +1445,12 @@ def create_organ_montage(
 
     z_min = int(z_indices.min())
     z_max = int(z_indices.max())
-    logger.info(f"  Organ extent: slices {z_min}-{z_max}")
+    
+    # Clip to CT data bounds
+    z_min = max(0, z_min)
+    z_max = min(ct_data.shape[2] - 1, z_max)
+    
+    logger.info(f"  Organ extent: slices {z_min}-{z_max} (CT shape: {ct_data.shape})")
 
     # Select slices within organ extent
     slice_indices = np.linspace(z_min, z_max, num_slices, dtype=int)
@@ -1471,7 +1485,17 @@ def create_organ_montage(
             logger.debug(f"  Failed to load skeletal composite: {e}")
 
     # Add organ mask
-    label_masks[organ] = organ_mask
+    # Ensure organ_mask matches CT shape exactly
+    if organ_mask.shape != ct_data.shape:
+        # Pad or trim to match
+        organ_mask_fixed = np.zeros(ct_data.shape, dtype=organ_mask.dtype)
+        x_max = min(organ_mask.shape[0], ct_data.shape[0])
+        y_max = min(organ_mask.shape[1], ct_data.shape[1])
+        z_max = min(organ_mask.shape[2], ct_data.shape[2])
+        organ_mask_fixed[:x_max, :y_max, :z_max] = organ_mask[:x_max, :y_max, :z_max]
+        label_masks[organ] = organ_mask_fixed
+    else:
+        label_masks[organ] = organ_mask
 
     # Create montage
     cols = 4
@@ -1479,77 +1503,82 @@ def create_organ_montage(
 
     vmin, vmax = window
 
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4), dpi=dpi)
-    axes = np.atleast_2d(axes)
+    fig = None
+    try:
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4), dpi=dpi)
+        axes = np.atleast_2d(axes)
 
-    for i, slice_idx in enumerate(slice_indices):
-        r, c = divmod(i, cols)
-        ax = axes[r, c]
-        ax.axis("off")
+        for i, slice_idx in enumerate(slice_indices):
+            r, c = divmod(i, cols)
+            ax = axes[r, c]
+            ax.axis("off")
 
-        ct_slice = ct_data[:, :, slice_idx]
-        masks = {k: v[:, :, slice_idx] for k, v in label_masks.items()}
+            ct_slice = ct_data[:, :, slice_idx]
+            masks = {k: v[:, :, slice_idx] for k, v in label_masks.items()}
 
-        # Window and normalize
-        ct_slice = np.clip(ct_slice, vmin, vmax)
-        ct_slice = (ct_slice - vmin) / float(vmax - vmin)
+            # Window and normalize
+            ct_slice = np.clip(ct_slice, vmin, vmax)
+            ct_slice = (ct_slice - vmin) / float(vmax - vmin)
 
-        ax.imshow(ct_slice.T, cmap="gray", origin="lower")
+            ax.imshow(ct_slice.T, cmap="gray", origin="lower")
 
-        # Create RGBA overlay
-        overlay = np.zeros((*ct_slice.shape, 4), dtype=np.float32)
-        
-        # Draw tissue types first (background), then organ on top
-        for label in ["SAT", "VAT", "Muscle", "Skeletal"]:
-            if label in masks and label in colors:
-                color = mcolors.to_rgba(colors[label], alpha=alpha)
-                overlay[masks[label].T > 0] = color
+            # Create RGBA overlay
+            overlay = np.zeros((*ct_slice.shape, 4), dtype=np.float32)
+            
+            # Draw tissue types first (background), then organ on top
+            for label in ["SAT", "VAT", "Muscle", "Skeletal"]:
+                if label in masks and label in colors:
+                    color = mcolors.to_rgba(colors[label], alpha=alpha)
+                    overlay[masks[label].T > 0] = color
 
-        # Draw organ with higher alpha on top
-        if organ in masks and organ in colors:
-            organ_alpha = min(1.0, alpha * 1.5)  # Slightly more opaque
-            color = mcolors.to_rgba(colors[organ], alpha=organ_alpha)
-            overlay[masks[organ].T > 0] = color
+            # Draw organ with higher alpha on top
+            if organ in masks and organ in colors:
+                organ_alpha = min(1.0, alpha * 1.5)  # Slightly more opaque
+                color = mcolors.to_rgba(colors[organ], alpha=organ_alpha)
+                overlay[masks[organ].T > 0] = color
 
-        ax.imshow(overlay, origin="lower")
-        ax.set_title(f"Slice {slice_idx}")
+            ax.imshow(overlay, origin="lower")
+            ax.set_title(f"Slice {slice_idx}")
 
-    # Turn off unused axes
-    for j in range(len(slice_indices), rows * cols):
-        r, c = divmod(j, cols)
-        axes[r, c].axis("off")
+        # Turn off unused axes
+        for j in range(len(slice_indices), rows * cols):
+            r, c = divmod(j, cols)
+            axes[r, c].axis("off")
 
-    # Legend
-    legend_labels = [
-        l for l in ["SAT", "VAT", "Muscle", "Skeletal", organ]
-        if l in label_masks
-    ]
-    legend_patches = [
-        Patch(color=colors[label], label=label.replace("_", " "))
-        for label in legend_labels
-        if label in colors
-    ]
+        # Legend
+        legend_labels = [
+            l for l in ["SAT", "VAT", "Muscle", "Skeletal", organ]
+            if l in label_masks
+        ]
+        legend_patches = [
+            Patch(color=colors[label], label=label.replace("_", " "))
+            for label in legend_labels
+            if label in colors
+        ]
 
-    if legend_patches:
-        fig.legend(handles=legend_patches, loc="lower center", ncol=5)
+        if legend_patches:
+            fig.legend(handles=legend_patches, loc="lower center", ncol=5)
 
-    # Determine output path
-    if output_dir is None:
-        output_dir = seg_dir / "figures"
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+        # Determine output path
+        if output_dir is None:
+            output_dir = seg_dir / "figures"
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create filename
-    subject_id = subject_label.replace("sub-", "")
-    output_name = f"{subject_id}_{organ}_montage.png"
-    output_png = output_dir / output_name
+        # Create filename
+        subject_id = subject_label.replace("sub-", "")
+        output_name = f"{subject_id}_{organ}_montage.png"
+        output_png = output_dir / output_name
 
-    fig.tight_layout(rect=[0, 0.05, 1, 1])
-    fig.savefig(output_png, bbox_inches="tight")
-    plt.close(fig)
+        fig.tight_layout(rect=[0, 0.05, 1, 1])
+        fig.savefig(output_png, bbox_inches="tight")
 
-    logger.info(f"  ✓ Saved organ montage: {output_png}")
-    return output_png
+        logger.info(f"  ✓ Saved organ montage: {output_png}")
+        return output_png
+    finally:
+        # Always close figure to prevent memory leak
+        if fig is not None:
+            plt.close(fig)
 
 
 def create_organ_montages(

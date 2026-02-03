@@ -9,6 +9,8 @@ from .figures import (
 	create_label_overlay_montage,
 	create_tissue_types_montage_from_bids,
 	create_tissue_types_montages,
+	create_vertebrae_slice_report,
+	create_vertebrae_slice_reports,
 )
 
 __version__ = "0.1.0"
@@ -21,5 +23,7 @@ __all__ = [
 	"create_label_overlay_montage",
 	"create_tissue_types_montage_from_bids",
 	"create_tissue_types_montages",
+	"create_vertebrae_slice_report",
+	"create_vertebrae_slice_reports",
 ]
 

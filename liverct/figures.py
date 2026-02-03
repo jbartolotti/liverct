@@ -268,7 +268,136 @@ def create_and_save_skeletal_composite(
     return output_path
 
 
-def _select_slices(mask_union: np.ndarray, axis: int, num_slices: int) -> List[int]:
+def _get_anatomical_z_range(
+    bids_root: Path,
+    subject_label: str,
+    session_label: Optional[str] = None,
+    superior_limit: Optional[str] = None,
+    inferior_limit: Optional[str] = None,
+    axis: int = 2,
+) -> Optional[Tuple[int, int]]:
+    """
+    Determine anatomical Z range based on vertebrae/sacrum segmentations.
+
+    Parameters
+    ----------
+    bids_root : Path
+        Root BIDS directory
+    subject_label : str
+        Subject label
+    session_label : str, optional
+        Session label
+    superior_limit : str, optional
+        Superior anatomical limit (e.g., "C1", "T1"). None = no limit
+    inferior_limit : str, optional
+        Inferior anatomical limit (e.g., "S1", "sacrum"). None = no limit
+    axis : int
+        Axis along which to compute range (default: 2 for axial)
+
+    Returns
+    -------
+    tuple or None
+        (min_slice, max_slice) or None if landmarks not found
+    """
+    if superior_limit is None and inferior_limit is None:
+        return None
+
+    # Normalize labels
+    subject_label = subject_label if subject_label.startswith("sub-") else f"sub-{subject_label}"
+    if session_label:
+        session_label = session_label if session_label.startswith("ses-") else f"ses-{session_label}"
+
+    # Find TotalSegmentator directory
+    try:
+        total_dir = find_total_dir(bids_root, subject_label, session_label)
+        if not total_dir.exists():
+            logger.warning(f"Total segmentations directory not found: {total_dir}")
+            return None
+    except Exception as e:
+        logger.warning(f"Could not find TotalSegmentator directory: {e}")
+        return None
+
+    # Map anatomical labels to file patterns
+    def get_file_pattern(label: str) -> str:
+        label_lower = label.lower()
+        if label_lower == "sacrum":
+            return "sacrum.nii.gz"
+        # Vertebrae: C1-C7, T1-T12, L1-L5, S1
+        return f"vertebrae_{label.upper()}.nii.gz"
+
+    min_slice, max_slice = None, None
+
+    # Process superior limit
+    if superior_limit:
+        pattern = get_file_pattern(superior_limit)
+        file_path = total_dir / pattern
+        if file_path.exists():
+            try:
+                img = nib.load(str(file_path))
+                mask = img.get_fdata() > 0
+                # Find superior-most (highest index) slice with this structure
+                axes = tuple(i for i in range(mask.ndim) if i != axis)
+                slice_sums = mask.sum(axis=axes)
+                indices = np.where(slice_sums > 0)[0]
+                if indices.size > 0:
+                    max_slice = int(indices.max())
+                    logger.info(f"Superior limit {superior_limit}: slice {max_slice}")
+            except Exception as e:
+                logger.warning(f"Could not load {superior_limit} segmentation: {e}")
+        else:
+            logger.warning(f"Segmentation file not found: {file_path}")
+
+    # Process inferior limit
+    if inferior_limit:
+        pattern = get_file_pattern(inferior_limit)
+        file_path = total_dir / pattern
+        if file_path.exists():
+            try:
+                img = nib.load(str(file_path))
+                mask = img.get_fdata() > 0
+                # Find inferior-most (lowest index) slice with this structure
+                axes = tuple(i for i in range(mask.ndim) if i != axis)
+                slice_sums = mask.sum(axis=axes)
+                indices = np.where(slice_sums > 0)[0]
+                if indices.size > 0:
+                    min_slice = int(indices.min())
+                    logger.info(f"Inferior limit {inferior_limit}: slice {min_slice}")
+            except Exception as e:
+                logger.warning(f"Could not load {inferior_limit} segmentation: {e}")
+        else:
+            logger.warning(f"Segmentation file not found: {file_path}")
+
+    if min_slice is None and max_slice is None:
+        return None
+
+    return (min_slice, max_slice)
+
+
+def _select_slices(
+    mask_union: np.ndarray,
+    axis: int,
+    num_slices: int,
+    z_range: Optional[Tuple[Optional[int], Optional[int]]] = None,
+) -> List[int]:
+    """
+    Select slice indices for montage.
+
+    Parameters
+    ----------
+    mask_union : np.ndarray
+        Union of all masks
+    axis : int
+        Axis along which to slice
+    num_slices : int
+        Number of slices to select
+    z_range : tuple, optional
+        (min_slice, max_slice) to limit the range. Either can be None.
+
+    Returns
+    -------
+    list
+        Selected slice indices
+    """
     # Determine slices with any mask content
     axes = tuple(i for i in range(mask_union.ndim) if i != axis)
     slice_sums = mask_union.sum(axis=axes)
@@ -280,6 +409,16 @@ def _select_slices(mask_union: np.ndarray, axis: int, num_slices: int) -> List[i
         return list(np.linspace(0, total_slices - 1, num_slices, dtype=int))
 
     start, end = int(candidate_indices.min()), int(candidate_indices.max())
+
+    # Apply anatomical range limits if provided
+    if z_range is not None:
+        min_limit, max_limit = z_range
+        if min_limit is not None:
+            start = max(start, min_limit)
+        if max_limit is not None:
+            end = min(end, max_limit)
+        logger.info(f"Applied anatomical range limits: slice {start} to {end}")
+
     indices = np.linspace(start, end, num_slices, dtype=int)
     return list(np.unique(indices))
 
@@ -295,6 +434,7 @@ def create_label_overlay_montage(
     dpi: int = 200,
     label_colors: Optional[Dict[str, str]] = None,
     label_arrays: Optional[Dict[str, np.ndarray]] = None,
+    z_range: Optional[Tuple[Optional[int], Optional[int]]] = None,
 ) -> Path:
     """
     Create montage of CT slices with label overlays.
@@ -319,6 +459,8 @@ def create_label_overlay_montage(
         Output DPI
     label_colors : dict, optional
         Custom label colors
+    z_range : tuple, optional
+        (min_slice, max_slice) to limit anatomical range. Either can be None.
 
     Returns
     -------
@@ -364,7 +506,9 @@ def create_label_overlay_montage(
                 logger.error(f"  ✗ Failed to add {label}: {e}")
 
     # Slice selection
-    slice_indices = _select_slices(mask_union, axis=axis, num_slices=num_slices)
+    slice_indices = _select_slices(
+        mask_union, axis=axis, num_slices=num_slices, z_range=z_range
+    )
     if len(slice_indices) == 0:
         raise ValueError("No slices selected for montage")
 
@@ -440,10 +584,40 @@ def create_tissue_types_montage_from_bids(
     output_dir: Optional[Path] = None,
     series_description_pattern: Optional[str] = None,
     include_skeletal: bool = True,
+    superior_limit: Optional[str] = None,
+    inferior_limit: Optional[str] = None,
     **kwargs,
 ) -> Path:
     """
     Convenience wrapper to generate a tissue types montage from BIDS structure.
+
+    Parameters
+    ----------
+    bids_root : Path
+        Root BIDS directory
+    subject_label : str
+        Subject label
+    session_label : str, optional
+        Session label
+    output_dir : Path, optional
+        Output directory for montage
+    series_description_pattern : str, optional
+        Pattern to match CT series
+    include_skeletal : bool
+        Include skeletal composite overlay
+    superior_limit : str, optional
+        Superior anatomical limit (e.g., "C1", "T1"). None = no limit.
+    inferior_limit : str, optional
+        Inferior anatomical limit (e.g., "S1", "sacrum", "L5"). None = no limit.
+        Common choices: "sacrum" (includes entire sacrum), "S1" (first sacral vertebra),
+        "L5" (stop at lowest lumbar vertebra).
+    **kwargs
+        Additional arguments passed to create_label_overlay_montage
+
+    Returns
+    -------
+    Path
+        Output montage file path
     """
     ct_file = find_ct_nifti(
         bids_root,
@@ -498,12 +672,26 @@ def create_tissue_types_montage_from_bids(
         output_name += f"_{session_label}"
     output_name += "_tissue_types_montage.png"
 
+    # Compute anatomical Z range if limits specified
+    z_range = None
+    axis = kwargs.get("axis", 2)  # Default to axial
+    if superior_limit or inferior_limit:
+        z_range = _get_anatomical_z_range(
+            bids_root,
+            subject_label,
+            session_label=session_label,
+            superior_limit=superior_limit,
+            inferior_limit=inferior_limit,
+            axis=axis,
+        )
+
     output_png = Path(output_dir) / output_name
     return create_label_overlay_montage(
         ct_file,
         label_files,
         output_png,
         label_arrays=label_arrays if label_arrays else None,
+        z_range=z_range,
         **kwargs,
     )
 
@@ -515,10 +703,38 @@ def create_tissue_types_montages(
     output_dir: Optional[Path] = None,
     series_description_pattern: Optional[str] = None,
     include_skeletal: bool = True,
+    superior_limit: Optional[str] = None,
+    inferior_limit: Optional[str] = None,
     **kwargs,
 ) -> Dict[str, Path]:
     """
     Create tissue types montages for multiple subjects.
+
+    Parameters
+    ----------
+    bids_root : Path
+        Root BIDS directory
+    subjects : str or list, optional
+        Subject(s) to process. None = all subjects.
+    session_label : str, optional
+        Session label
+    output_dir : Path, optional
+        Output directory
+    series_description_pattern : str, optional
+        Pattern to match CT series
+    include_skeletal : bool
+        Include skeletal composite overlay
+    superior_limit : str, optional
+        Superior anatomical limit (e.g., "C1", "T1").
+    inferior_limit : str, optional
+        Inferior anatomical limit (e.g., "S1", "sacrum", "L5").
+    **kwargs
+        Additional arguments passed to montage creation
+
+    Returns
+    -------
+    dict
+        Mapping of subject_label to output file path
     """
     bids_root = Path(bids_root)
     if subjects is None:
@@ -539,10 +755,227 @@ def create_tissue_types_montages(
                 output_dir=output_dir,
                 series_description_pattern=series_description_pattern,
                 include_skeletal=include_skeletal,
+                superior_limit=superior_limit,
+                inferior_limit=inferior_limit,
                 **kwargs,
             )
             results[subject_label] = output
         except Exception as e:
             logger.error(f"Failed montage for {subject_label}: {e}")
+
+    return results
+
+
+def create_vertebrae_slice_report(
+    bids_root: Path,
+    subject_label: str,
+    session_label: Optional[str] = None,
+    output_dir: Optional[Path] = None,
+    axis: int = 2,
+    include_sacrum: bool = True,
+) -> Tuple[Path, Path]:
+    """
+    Generate vertebrae slice location reports for a subject.
+
+    Creates two TSV files:
+    1. vertebrae_slices.tsv: One row per vertebra with min/max/center slice info
+    2. slice_vertebrae.tsv: One row per slice with vertebrae present
+
+    Parameters
+    ----------
+    bids_root : Path
+        Root BIDS directory
+    subject_label : str
+        Subject label
+    session_label : str, optional
+        Session label
+    output_dir : Path, optional
+        Output directory. If None, uses derivatives/totalsegmentator/sub-XXX/
+    axis : int
+        Axis for slice indexing (default: 2 for axial)
+    include_sacrum : bool
+        Include sacrum in addition to individual vertebrae
+
+    Returns
+    -------
+    tuple
+        (vertebrae_summary_path, slice_lookup_path)
+    """
+    import csv
+    from collections import defaultdict
+
+    # Normalize labels
+    subject_label = subject_label if subject_label.startswith("sub-") else f"sub-{subject_label}"
+    if session_label:
+        session_label = session_label if session_label.startswith("ses-") else f"ses-{session_label}"
+
+    # Find total directory
+    total_dir = find_total_dir(bids_root, subject_label, session_label)
+    if not total_dir.exists():
+        raise FileNotFoundError(f"Total segmentations directory not found: {total_dir}")
+
+    # Determine output directory
+    if output_dir is None:
+        base_dir = Path(bids_root) / "derivatives" / "totalsegmentator" / subject_label
+        if session_label:
+            base_dir = base_dir / session_label
+        output_dir = base_dir
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Define vertebrae to process
+    vertebrae_labels = []
+    # Cervical
+    for i in range(1, 8):
+        vertebrae_labels.append(f"C{i}")
+    # Thoracic
+    for i in range(1, 13):
+        vertebrae_labels.append(f"T{i}")
+    # Lumbar
+    for i in range(1, 6):
+        vertebrae_labels.append(f"L{i}")
+    # Sacral
+    vertebrae_labels.append("S1")
+    if include_sacrum:
+        vertebrae_labels.append("sacrum")
+
+    # Collect vertebra information
+    vertebra_data = []
+    slice_to_vertebrae = defaultdict(list)
+
+    for vertebra in vertebrae_labels:
+        # Construct filename
+        if vertebra.lower() == "sacrum":
+            filename = "sacrum.nii.gz"
+        else:
+            filename = f"vertebrae_{vertebra}.nii.gz"
+        
+        file_path = total_dir / filename
+        if not file_path.exists():
+            logger.debug(f"Vertebra segmentation not found: {filename}")
+            continue
+
+        try:
+            # Load mask
+            img = nib.load(str(file_path))
+            mask = img.get_fdata() > 0
+
+            # Get slice indices where vertebra is present
+            axes = tuple(i for i in range(mask.ndim) if i != axis)
+            slice_sums = mask.sum(axis=axes)
+            indices = np.where(slice_sums > 0)[0]
+
+            if indices.size == 0:
+                logger.warning(f"No voxels found in {filename}")
+                continue
+
+            min_slice = int(indices.min())
+            max_slice = int(indices.max())
+            extent = max_slice - min_slice + 1
+            num_voxels = int(mask.sum())
+
+            # Compute center of mass along the specified axis
+            # Get coordinates of all voxels in the mask
+            coords = np.where(mask)
+            axis_coords = coords[axis]
+            center_slice = int(np.round(axis_coords.mean()))
+
+            # Record vertebra data
+            vertebra_data.append({
+                "vertebra": vertebra,
+                "min_slice": min_slice,
+                "max_slice": max_slice,
+                "center_slice": center_slice,
+                "extent": extent,
+                "num_voxels": num_voxels,
+            })
+
+            # Record slice-to-vertebra mapping
+            for slice_idx in range(min_slice, max_slice + 1):
+                slice_to_vertebrae[slice_idx].append(vertebra)
+
+            logger.info(f"{vertebra}: slices {min_slice}-{max_slice}, center={center_slice}")
+
+        except Exception as e:
+            logger.error(f"Error processing {filename}: {e}")
+            continue
+
+    if not vertebra_data:
+        raise ValueError(f"No vertebrae segmentations found for {subject_label}")
+
+    # Write vertebrae summary TSV
+    summary_file = output_dir / f"{subject_label}_vertebrae_slices.tsv"
+    with open(summary_file, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["vertebra", "min_slice", "max_slice", "center_slice", "extent", "num_voxels"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerows(vertebra_data)
+
+    logger.info(f"Saved vertebrae summary: {summary_file}")
+
+    # Write slice lookup TSV
+    lookup_file = output_dir / f"{subject_label}_slice_vertebrae.tsv"
+    with open(lookup_file, "w", newline="") as f:
+        writer = csv.writer(f, delimiter="\t")
+        writer.writerow(["slice", "vertebrae"])
+        for slice_idx in sorted(slice_to_vertebrae.keys()):
+            vertebrae_list = ",".join(slice_to_vertebrae[slice_idx])
+            writer.writerow([slice_idx, vertebrae_list])
+
+    logger.info(f"Saved slice lookup: {lookup_file}")
+
+    return summary_file, lookup_file
+
+
+def create_vertebrae_slice_reports(
+    bids_root: Path,
+    subjects: Optional[Union[str, List[str]]] = None,
+    session_label: Optional[str] = None,
+    **kwargs,
+) -> Dict[str, Tuple[Path, Path]]:
+    """
+    Create vertebrae slice reports for multiple subjects.
+
+    Parameters
+    ----------
+    bids_root : Path
+        Root BIDS directory
+    subjects : str or list, optional
+        Subject(s) to process. None = all subjects.
+    session_label : str, optional
+        Session label
+    **kwargs
+        Additional arguments passed to create_vertebrae_slice_report
+
+    Returns
+    -------
+    dict
+        Mapping of subject_label to (summary_file, lookup_file) tuple
+    """
+    bids_root = Path(bids_root)
+    if subjects is None:
+        subject_dirs = sorted([d for d in bids_root.glob("sub-*") if d.is_dir()])
+        subject_labels = [d.name for d in subject_dirs]
+    elif isinstance(subjects, str):
+        subject_labels = [subjects]
+    else:
+        subject_labels = subjects
+
+    results: Dict[str, Tuple[Path, Path]] = {}
+    for subject_label in subject_labels:
+        try:
+            output = create_vertebrae_slice_report(
+                bids_root=bids_root,
+                subject_label=subject_label,
+                session_label=session_label,
+                **kwargs,
+            )
+            results[subject_label] = output
+            logger.info(f"✓ Generated reports for {subject_label}")
+        except Exception as e:
+            logger.error(f"✗ Failed reports for {subject_label}: {e}")
 
     return results

@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any, List, Union
 from .segmentation import CTSegmentationPipeline
+from .figures import create_vertebrae_slice_report
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,33 @@ class BIDSProcessingPipeline:
 
         if success:
             logger.info(f"  ✓ All segmentations completed successfully")
+            
+            # Generate vertebrae slice reports if "total" task was run
+            if (isinstance(tasks, str) and tasks == "total") or (isinstance(tasks, list) and "total" in tasks):
+                try:
+                    # Check if total directory exists
+                    total_dir = output_dir / "total"
+                    if total_dir.exists():
+                        # Check if reports already exist
+                        summary_file = output_dir / f"{subject_label}_vertebrae_slices.tsv"
+                        lookup_file = output_dir / f"{subject_label}_slice_vertebrae.tsv"
+                        
+                        if not (summary_file.exists() and lookup_file.exists()):
+                            logger.info(f"  Generating vertebrae slice reports...")
+                            create_vertebrae_slice_report(
+                                self.bids_root,
+                                subject_label,
+                                session_label=session_label,
+                                output_dir=output_dir,
+                            )
+                            logger.info(f"  ✓ Vertebrae reports generated")
+                        else:
+                            logger.debug(f"  Vertebrae reports already exist, skipping")
+                    else:
+                        logger.debug(f"  Total segmentation directory not found, skipping vertebrae reports")
+                except Exception as e:
+                    logger.warning(f"  ⚠ Failed to generate vertebrae reports: {e}")
+            
             return True
         else:
             logger.error(f"  ✗ One or more segmentations failed")

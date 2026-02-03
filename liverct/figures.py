@@ -1419,6 +1419,20 @@ def create_vertebrae_cross_subject_montage(
             except Exception as e:
                 logger.debug(f"  Failed to load skeletal composite: {e}")
 
+        # Add organ masks if requested
+        if include_organs is not None:
+            try:
+                organ_masks = _load_organ_masks(
+                    bids_root,
+                    subject_label,
+                    include_organs,
+                    ct_data.shape,
+                    session_label=session_label,
+                )
+                label_masks.update(organ_masks)
+            except Exception as e:
+                logger.debug(f"  Failed to load organ masks: {e}")
+
         # Get vertebrae center slices
         vertebrae_file = (
             Path(bids_root)

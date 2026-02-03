@@ -27,6 +27,53 @@ class CTSegmentationPipeline:
         pass
 
     @staticmethod
+    def _save_source_metadata(nifti_file: Path, output_dir: Path) -> None:
+        """
+        Save metadata about the source CT file used for segmentation.
+        
+        Creates a source.json file in the output directory that records
+        the CT file path, filename, and associated metadata (if available).
+        This allows derivatives to be traced back to their source CT series.
+        
+        Parameters
+        ----------
+        nifti_file : Path
+            Path to the source CT NIfTI file
+        output_dir : Path
+            Directory where segmentation outputs are saved
+        """
+        metadata = {
+            "source_file": str(nifti_file.absolute()),
+            "source_filename": nifti_file.name,
+        }
+        
+        # Try to load BIDS JSON sidecar if it exists
+        json_sidecar = nifti_file.with_suffix("").with_suffix(".json")
+        if json_sidecar.exists():
+            try:
+                with open(json_sidecar) as f:
+                    bids_metadata = json.load(f)
+                
+                # Store key metadata fields
+                metadata["SeriesDescription"] = bids_metadata.get("SeriesDescription", "")
+                metadata["SeriesNumber"] = bids_metadata.get("SeriesNumber", "")
+                metadata["AcquisitionTime"] = bids_metadata.get("AcquisitionTime", "")
+                metadata["Manufacturer"] = bids_metadata.get("Manufacturer", "")
+                metadata["ManufacturersModelName"] = bids_metadata.get("ManufacturersModelName", "")
+                
+            except Exception as e:
+                logger.warning(f"Could not read source CT metadata from {json_sidecar}: {e}")
+        
+        # Save metadata file
+        metadata_file = output_dir / "source.json"
+        try:
+            with open(metadata_file, "w") as f:
+                json.dump(metadata, f, indent=2)
+            logger.info(f"  ✓ Source metadata saved to: {metadata_file}")
+        except Exception as e:
+            logger.warning(f"  ⚠ Could not save source metadata: {e}")
+
+    @staticmethod
     def find_ct_series(
         bids_root: Path,
         subject_label: str,
@@ -300,6 +347,9 @@ class CTSegmentationPipeline:
                 nr_thr_saving=nr_thr_saving,
                 **kwargs,
             )
+
+            # Save source CT metadata
+            self._save_source_metadata(nifti_file, seg_output)
 
             # Check if output was created
             if statistics:

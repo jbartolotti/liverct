@@ -137,6 +137,105 @@ def find_ct_nifti(
     return None
 
 
+def find_ct_matching_segmentation(
+    bids_root: Path,
+    subject_label: str,
+    reference_seg_path: Path,
+    session_label: Optional[str] = None,
+) -> Optional[Path]:
+    """
+    Find CT file that matches the dimensions/affine of a segmentation file.
+    
+    First checks for a source.json metadata file in the segmentation directory.
+    If not found, falls back to dimension matching across all CT files.
+    
+    This ensures we get the same CT that was used to create the segmentation,
+    which is critical when subjects have multiple CT series.
+    
+    Parameters
+    ----------
+    bids_root : Path
+        Root BIDS directory
+    subject_label : str
+        Subject label
+    reference_seg_path : Path
+        Path to segmentation file to match
+    session_label : str, optional
+        Session label
+        
+    Returns
+    -------
+    Path or None
+        CT file path that matches segmentation dimensions
+    """
+    subject_label = _normalize_subject_label(subject_label)
+    session_label = _normalize_session_label(session_label)
+    
+    # First, try to find source.json metadata file
+    # reference_seg_path should be in a directory like .../total/liver.nii.gz
+    # source.json should be in .../total/source.json
+    seg_dir = reference_seg_path.parent
+    source_metadata_file = seg_dir / "source.json"
+    
+    if source_metadata_file.exists():
+        try:
+            import json
+            with open(source_metadata_file) as f:
+                metadata = json.load(f)
+            
+            # Get source file path
+            source_file = Path(metadata.get("source_file", ""))
+            if source_file.exists():
+                logger.info(f"  Using source CT from metadata: {source_file.name}")
+                return source_file
+            else:
+                logger.warning(
+                    f"  Source CT in metadata not found: {source_file}, "
+                    f"falling back to dimension matching"
+                )
+        except Exception as e:
+            logger.warning(f"  Could not read source metadata: {e}, falling back to dimension matching")
+    
+    # Fall back to dimension matching
+    logger.info("  Finding CT by dimension matching...")
+    
+    # Load reference segmentation to get shape/affine
+    ref_img = nib.load(str(reference_seg_path))
+    ref_shape = ref_img.shape
+    ref_affine = ref_img.affine
+    
+    # Find all CT files for this subject
+    subject_dir = Path(bids_root) / subject_label
+    ct_files = []
+    
+    if session_label:
+        ct_dir = subject_dir / session_label / "ct"
+        if ct_dir.exists():
+            ct_files.extend(ct_dir.glob("*.nii*"))
+    else:
+        ct_dir = subject_dir / "ct"
+        if ct_dir.exists():
+            ct_files.extend(ct_dir.glob("*.nii*"))
+        
+        # Also check session directories
+        for ses_dir in sorted(subject_dir.glob("ses-*")):
+            ct_dir = ses_dir / "ct"
+            if ct_dir.exists():
+                ct_files.extend(ct_dir.glob("*.nii*"))
+    
+    # Find CT with matching dimensions
+    for ct_file in ct_files:
+        try:
+            ct_img = nib.load(str(ct_file))
+            if ct_img.shape == ref_shape and np.allclose(ct_img.affine, ref_affine):
+                logger.info(f"  Matched CT by dimensions: {ct_file.name}")
+                return ct_file
+        except Exception:
+            continue
+    
+    return None
+
+
 def find_tissue_types_dir(
     bids_root: Path,
     subject_label: str,
@@ -1386,21 +1485,7 @@ def create_organ_montage(
 
     logger.info(f"Creating organ montage: {subject_label} - {organ}")
 
-    # Find CT file
-    ct_file = find_ct_nifti(
-        bids_root,
-        subject_label,
-        session_label=session_label,
-        series_description_pattern=series_description_pattern,
-    )
-    if not ct_file:
-        raise FileNotFoundError(f"CT not found for {subject_label}")
-
-    # Load CT data
-    ct_img = nib.load(str(ct_file))
-    ct_data = ct_img.get_fdata().astype(np.float32)
-
-    # Find organ mask file in total directory
+    # Find organ mask file in total directory first
     total_dir = find_total_dir(bids_root, subject_label, session_label)
     
     # Map organ names to file patterns
@@ -1422,18 +1507,48 @@ def create_organ_montage(
     if not organ_file.exists():
         raise FileNotFoundError(f"Organ segmentation not found: {organ_file}")
 
+    # Find CT file that matches the segmentation dimensions
+    # This ensures we use the same CT that was used for segmentation
+    ct_file = find_ct_matching_segmentation(
+        bids_root,
+        subject_label,
+        reference_seg_path=organ_file,
+        session_label=session_label,
+    )
+    
+    # Fall back to pattern matching if dimension matching fails
+    if not ct_file:
+        logger.warning(
+            f"  Could not find CT matching segmentation dimensions, "
+            f"falling back to pattern matching"
+        )
+        ct_file = find_ct_nifti(
+            bids_root,
+            subject_label,
+            session_label=session_label,
+            series_description_pattern=series_description_pattern,
+        )
+    
+    if not ct_file:
+        raise FileNotFoundError(f"CT not found for {subject_label}")
+    
+    logger.info(f"  Using CT: {ct_file.name}")
+    
+    # Load CT data
+    ct_img = nib.load(str(ct_file))
+    ct_data = ct_img.get_fdata().astype(np.float32)
+
     # Load organ mask and determine Z extent
     organ_img = nib.load(str(organ_file))
     organ_mask = organ_img.get_fdata() > 0
 
-    # Validate shapes match
+    # Validate shapes match (should match now since we found CT by dimension)
     if organ_mask.shape != ct_data.shape:
-        logger.warning(
-            f"  Shape mismatch: organ {organ_mask.shape} vs CT {ct_data.shape}. "
-            f"Attempting to use CT dimensions."
+        raise ValueError(
+            f"Shape mismatch after CT matching: "
+            f"organ {organ_mask.shape} vs CT {ct_data.shape}. "
+            f"This suggests the segmentation was created from a different CT series."
         )
-        # Clip organ_mask to match CT shape if possible
-        organ_mask = organ_mask[:ct_data.shape[0], :ct_data.shape[1], :ct_data.shape[2]]
 
     # Find Z extent (axis 2 for axial)
     axes = (0, 1)  # Sum over X and Y to get Z extent

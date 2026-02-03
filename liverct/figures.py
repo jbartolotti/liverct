@@ -979,3 +979,324 @@ def create_vertebrae_slice_reports(
             logger.error(f"✗ Failed reports for {subject_label}: {e}")
 
     return results
+
+
+def create_vertebrae_cross_subject_montage(
+    bids_root: Path,
+    subjects: Union[List[str], str],
+    vertebrae: Optional[List[str]] = None,
+    num_vertebrae: int = 7,
+    session_label: Optional[str] = None,
+    output_dir: Optional[Path] = None,
+    series_description_pattern: Optional[str] = None,
+    include_skeletal: bool = True,
+    window: Tuple[int, int] = (-200, 250),
+    alpha: float = 0.35,
+    dpi: int = 200,
+    label_colors: Optional[Dict[str, str]] = None,
+    label_arrays_fn: Optional[callable] = None,
+) -> Path:
+    """
+    Create a cross-subject montage with subjects in rows and vertebrae in columns.
+
+    Parameters
+    ----------
+    bids_root : Path
+        Root BIDS directory
+    subjects : str or list of str
+        Single subject or list of subjects to include
+    vertebrae : list, optional
+        Specific vertebrae to include (e.g., ["C5", "T1", "T6", "T12", "L3", "L5"]).
+        If None, selects evenly-spaced vertebrae across the spine.
+    num_vertebrae : int
+        Number of vertebrae to show if vertebrae list not provided. Default: 7.
+    session_label : str, optional
+        Session label
+    output_dir : Path, optional
+        Output directory for montage
+    series_description_pattern : str, optional
+        Pattern to match CT series
+    include_skeletal : bool
+        Include skeletal composite overlay
+    window : tuple
+        HU window (min, max)
+    alpha : float
+        Overlay alpha
+    dpi : int
+        Output DPI
+    label_colors : dict, optional
+        Custom label colors
+    label_arrays_fn : callable, optional
+        Function to create additional label arrays (e.g., for skeletal composite)
+
+    Returns
+    -------
+    Path
+        Output montage file path
+    """
+    import csv
+
+    bids_root = Path(bids_root)
+    label_colors = label_colors or DEFAULT_LABEL_COLORS
+
+    # Normalize subjects list
+    if isinstance(subjects, str):
+        subject_list = [subjects]
+    else:
+        subject_list = list(subjects)
+
+    # Normalize subject labels
+    subject_list = [s if s.startswith("sub-") else f"sub-{s}" for s in subject_list]
+
+    logger.info(f"Creating cross-subject montage for {len(subject_list)} subjects")
+
+    # Determine which vertebrae to display
+    if vertebrae is None:
+        # Read vertebrae from first subject's summary file
+        summary_file = (
+            Path(bids_root)
+            / "derivatives"
+            / "totalsegmentator"
+            / subject_list[0]
+        )
+        if session_label:
+            session_label_norm = session_label if session_label.startswith("ses-") else f"ses-{session_label}"
+            summary_file = summary_file / session_label_norm
+        summary_file = summary_file / f"{subject_list[0]}_vertebrae_slices.tsv"
+
+        if not summary_file.exists():
+            raise FileNotFoundError(
+                f"Vertebrae summary file not found: {summary_file}. "
+                f"Please run vertebrae report generation first."
+            )
+
+        # Read all vertebrae from summary
+        all_vertebrae = []
+        with open(summary_file) as f:
+            reader = csv.DictReader(f, delimiter="\t")
+            for row in reader:
+                all_vertebrae.append(row["vertebra"])
+
+        # Select evenly-spaced vertebrae
+        if len(all_vertebrae) > num_vertebrae:
+            indices = np.linspace(0, len(all_vertebrae) - 1, num_vertebrae, dtype=int)
+            vertebrae = [all_vertebrae[i] for i in indices]
+        else:
+            vertebrae = all_vertebrae
+            logger.warning(
+                f"Only {len(all_vertebrae)} vertebrae available, "
+                f"requested {num_vertebrae}"
+            )
+
+    logger.info(f"Displaying vertebrae: {', '.join(vertebrae)}")
+
+    # Load CT data and tissue type masks for each subject
+    # Structure: subject_data[subject][vertebra] = (ct_slice, masks_dict)
+    subject_data: Dict[str, Dict[str, Tuple[np.ndarray, Dict]]] = {}
+
+    for subject_label in subject_list:
+        subject_data[subject_label] = {}
+        logger.info(f"Loading data for {subject_label}")
+
+        # Find CT file
+        ct_file = find_ct_nifti(
+            bids_root,
+            subject_label,
+            session_label=session_label,
+            series_description_pattern=series_description_pattern,
+        )
+        if not ct_file:
+            logger.warning(f"  CT not found for {subject_label}, skipping")
+            continue
+
+        # Load CT data once
+        ct_img = nib.load(str(ct_file))
+        ct_data = ct_img.get_fdata().astype(np.float32)
+
+        # Load tissue type masks
+        seg_dir = find_tissue_types_dir(bids_root, subject_label, session_label=session_label)
+        label_files = find_tissue_type_label_files(seg_dir)
+
+        label_masks: Dict[str, np.ndarray] = {}
+        for label, mask_path in label_files.items():
+            try:
+                mask_img = nib.load(str(mask_path))
+                if mask_img.shape != ct_data.shape:
+                    logger.debug(f"  Shape mismatch for {label}, skipping")
+                    continue
+                label_masks[label] = mask_img.get_fdata() > 0
+            except Exception as e:
+                logger.debug(f"  Failed to load {label}: {e}")
+
+        # Add skeletal composite if requested
+        if include_skeletal:
+            try:
+                skeletal_file = seg_dir / "skeletal_composite.nii.gz"
+                if skeletal_file.exists():
+                    skeletal_img = nib.load(str(skeletal_file))
+                    if skeletal_img.shape == ct_data.shape:
+                        skeletal_mask = skeletal_img.get_fdata() > 0
+                        if skeletal_mask.any():
+                            label_masks["Skeletal"] = skeletal_mask
+            except Exception as e:
+                logger.debug(f"  Failed to load skeletal composite: {e}")
+
+        # Get vertebrae center slices
+        vertebrae_file = (
+            Path(bids_root)
+            / "derivatives"
+            / "totalsegmentator"
+            / subject_label
+        )
+        if session_label:
+            session_label_norm = session_label if session_label.startswith("ses-") else f"ses-{session_label}"
+            vertebrae_file = vertebrae_file / session_label_norm
+        vertebrae_file = vertebrae_file / f"{subject_label}_vertebrae_slices.tsv"
+
+        if not vertebrae_file.exists():
+            logger.warning(f"  Vertebrae file not found for {subject_label}, skipping")
+            continue
+
+        # Read vertebrae center slices
+        vertebra_centers = {}
+        with open(vertebrae_file) as f:
+            reader = csv.DictReader(f, delimiter="\t")
+            for row in reader:
+                vertebra_centers[row["vertebra"]] = int(row["center_slice"])
+
+        # Extract slices for each vertebra
+        for vertebra in vertebrae:
+            if vertebra not in vertebra_centers:
+                logger.debug(f"  Vertebra {vertebra} not found for {subject_label}")
+                continue
+
+            slice_idx = vertebra_centers[vertebra]
+            ct_slice = ct_data[:, :, slice_idx]
+            masks = {k: v[:, :, slice_idx] for k, v in label_masks.items()}
+
+            subject_data[subject_label][vertebra] = (ct_slice, masks)
+
+    if not subject_data or all(not v for v in subject_data.values()):
+        raise ValueError("No data loaded for any subject/vertebra combination")
+
+    # Create montage grid
+    num_rows = len(subject_list)
+    num_cols = len(vertebrae)
+
+    fig, axes = plt.subplots(
+        num_rows, num_cols, figsize=(num_cols * 3.5, num_rows * 3.5), dpi=dpi
+    )
+
+    # Handle single row/column cases
+    if num_rows == 1:
+        axes = axes.reshape(1, -1)
+    elif num_cols == 1:
+        axes = axes.reshape(-1, 1)
+    else:
+        axes = np.atleast_2d(axes)
+
+    vmin, vmax = window
+
+    # Fill grid
+    for row_idx, subject_label in enumerate(subject_list):
+        for col_idx, vertebra in enumerate(vertebrae):
+            ax = axes[row_idx, col_idx]
+            ax.axis("off")
+
+            # Get data if available
+            if subject_label not in subject_data or vertebra not in subject_data[subject_label]:
+                # Empty cell
+                ax.text(
+                    0.5,
+                    0.5,
+                    f"N/A",
+                    ha="center",
+                    va="center",
+                    transform=ax.transAxes,
+                    fontsize=10,
+                    color="red",
+                )
+                continue
+
+            ct_slice, masks = subject_data[subject_label][vertebra]
+
+            # Window and normalize
+            ct_slice = np.clip(ct_slice, vmin, vmax)
+            ct_slice = (ct_slice - vmin) / float(vmax - vmin)
+
+            # Display CT
+            ax.imshow(ct_slice.T, cmap="gray", origin="lower")
+
+            # Create RGBA overlay
+            overlay = np.zeros((*ct_slice.shape, 4), dtype=np.float32)
+            for label, mask_slice in masks.items():
+                if label not in label_colors:
+                    continue
+                color = mcolors.to_rgba(label_colors[label], alpha=alpha)
+                overlay[mask_slice.T > 0] = color
+
+            ax.imshow(overlay, origin="lower")
+
+        # Row label (subject)
+        subject_id = subject_list[row_idx].replace("sub-", "")
+        axes[row_idx, 0].text(
+            -0.15,
+            0.5,
+            subject_id,
+            transform=axes[row_idx, 0].transAxes,
+            fontsize=10,
+            weight="bold",
+            ha="right",
+            va="center",
+        )
+
+    # Column labels (vertebrae)
+    for col_idx, vertebra in enumerate(vertebrae):
+        axes[0, col_idx].text(
+            0.5,
+            1.05,
+            vertebra,
+            transform=axes[0, col_idx].transAxes,
+            fontsize=10,
+            weight="bold",
+            ha="center",
+            va="bottom",
+        )
+
+    # Legend
+    legend_labels = [
+        label for labels in subject_data.values()
+        for label in labels.get(vertebrae[0], (None, {}))[1].keys()
+    ]
+    legend_labels = list(dict.fromkeys(legend_labels))  # Remove duplicates, preserve order
+
+    legend_patches = [
+        Patch(color=label_colors[label], label=label)
+        for label in legend_labels
+        if label in label_colors
+    ]
+
+    if legend_patches:
+        fig.legend(handles=legend_patches, loc="lower center", ncol=4, bbox_to_anchor=(0.5, -0.02))
+
+    # Determine output path
+    if output_dir is None:
+        output_dir = Path(bids_root) / "derivatives" / "totalsegmentator" / "figures"
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create filename
+    subject_prefix = "_".join([s.replace("sub-", "") for s in subject_list[:3]])
+    if len(subject_list) > 3:
+        subject_prefix += f"+{len(subject_list)-3}more"
+    vertebra_range = f"{vertebrae[0]}-{vertebrae[-1]}"
+
+    output_name = f"{subject_prefix}_vertebrae_{vertebra_range}_cross_subject.png"
+    output_png = output_dir / output_name
+
+    fig.tight_layout(rect=[0.1, 0.05, 1, 1])
+    fig.savefig(output_png, bbox_inches="tight", dpi=dpi)
+    plt.close(fig)
+
+    logger.info(f"Saved cross-subject montage: {output_png}")
+    return output_png

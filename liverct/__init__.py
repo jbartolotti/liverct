@@ -11,6 +11,7 @@ from .figures import (
 	create_tissue_types_montages,
 	create_vertebrae_slice_report,
 	create_vertebrae_slice_reports,
+	create_vertebrae_cross_subject_montage,
 )
 
 __version__ = "0.1.0"
@@ -25,5 +26,6 @@ __all__ = [
 	"create_tissue_types_montages",
 	"create_vertebrae_slice_report",
 	"create_vertebrae_slice_reports",
+	"create_vertebrae_cross_subject_montage",
 ]
 

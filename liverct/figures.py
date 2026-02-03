@@ -32,6 +32,23 @@ ORGAN_COLORS = {
     "heart": "#DC143C",        # crimson
 }
 
+# Sub-segmentation colors (reusable across different organs)
+# These are distinct, perceptually-uniform colors suitable for categorical data
+SUBSEGMENT_COLORS = [
+    "#E41A1C",  # red
+    "#377EB8",  # blue
+    "#4DAF4A",  # green
+    "#984EA3",  # purple
+    "#FF7F00",  # orange
+    "#FFFF33",  # yellow
+    "#A65628",  # brown
+    "#F781BF",  # pink
+    "#999999",  # grey
+    "#66C2A5",  # teal
+    "#FC8D62",  # salmon
+    "#8DA0CB",  # lavender
+]
+
 LABEL_PATTERNS = {
     "SAT": ["subcutaneous_fat", "subcutaneous_adipose", "subcutaneous", "sat"],
     "VAT": ["visceral_fat", "visceral_adipose", "visceral", "vat", "torso_fat"],
@@ -1802,3 +1819,221 @@ def create_organ_montages(
             logger.error(f"  ✗ Failed to create {organ} montage: {e}")
 
     return results
+
+
+def create_liver_segments_montage(
+    bids_root: Path,
+    subject_label: str,
+    session_label: Optional[str] = None,
+    num_slices: int = 12,
+    output_dir: Optional[Path] = None,
+    series_description_pattern: Optional[str] = None,
+    include_tissue: bool = True,
+    window: Tuple[int, int] = (-200, 250),
+    alpha: float = 0.35,
+    dpi: int = 200,
+) -> Path:
+    """
+    Create montage showing liver with its 8 sub-segments color-coded.
+
+    Parameters
+    ----------
+    bids_root : Path
+        Root BIDS directory
+    subject_label : str
+        Subject label
+    session_label : str, optional
+        Session label
+    num_slices : int, optional
+        Number of slices to display (default: 12)
+    output_dir : Path, optional
+        Output directory for PNG file
+    series_description_pattern : str, optional
+        Pattern to match CT series description
+    include_tissue : bool, optional
+        Whether to include tissue overlays (SAT, VAT, Muscle, Skeletal)
+        Default: True
+    window : tuple, optional
+        HU window for display (default: (-200, 250))
+    alpha : float, optional
+        Transparency for overlays (0-1, default: 0.35)
+    dpi : int, optional
+        Output resolution (default: 200)
+
+    Returns
+    -------
+    Path
+        Output PNG file path
+    """
+    fig = None
+    try:
+        # Normalize labels
+        subject_label = _normalize_subject_label(subject_label)
+        session_label = _normalize_session_label(session_label)
+
+        logger.info(f"Creating liver segments montage for {subject_label}")
+
+        # Build paths
+        derivatives_dir = Path(bids_root) / "derivatives" / "totalsegmentator" / subject_label
+        if session_label:
+            derivatives_dir = derivatives_dir / session_label
+
+        # Find liver segment files
+        liver_seg_dir = derivatives_dir / "liver_segments"
+        if not liver_seg_dir.exists():
+            raise FileNotFoundError(f"Liver segments directory not found: {liver_seg_dir}")
+
+        # Load all 8 liver segments
+        segment_files = sorted(liver_seg_dir.glob("liver_segment_*.nii.gz"))
+        if not segment_files:
+            raise FileNotFoundError(f"No liver segment files found in {liver_seg_dir}")
+
+        logger.info(f"  Found {len(segment_files)} liver segments")
+
+        # Use first segment file to find matching CT
+        first_seg_file = segment_files[0]
+        ct_file = find_ct_matching_segmentation(first_seg_file, bids_root, series_description_pattern)
+
+        # Load CT
+        ct_nifti = nib.load(ct_file)
+        ct_data = ct_nifti.get_fdata()
+
+        # Load all segments and assign colors
+        segment_masks = {}
+        for i, seg_file in enumerate(segment_files):
+            seg_num = int(seg_file.stem.split("_")[-1])  # Extract segment number
+            seg_nifti = nib.load(seg_file)
+            seg_data = seg_nifti.get_fdata()
+
+            # Validate and clip shape
+            if seg_data.shape != ct_data.shape:
+                logger.warning(f"  Shape mismatch for {seg_file.name}: {seg_data.shape} vs CT {ct_data.shape}")
+                seg_data = seg_data[:ct_data.shape[0], :ct_data.shape[1], :ct_data.shape[2]]
+
+            segment_masks[f"Segment {seg_num}"] = seg_data > 0
+
+        # Load tissue overlays if requested
+        tissue_masks = {}
+        if include_tissue:
+            tissue_dir = derivatives_dir / "tissue_types"
+            if tissue_dir.exists():
+                for tissue_name, patterns in LABEL_PATTERNS.items():
+                    for pattern in patterns:
+                        tissue_files = list(tissue_dir.glob(f"*{pattern}*.nii.gz"))
+                        if tissue_files:
+                            tissue_nifti = nib.load(tissue_files[0])
+                            tissue_data = tissue_nifti.get_fdata()
+                            if tissue_data.shape != ct_data.shape:
+                                tissue_data = tissue_data[:ct_data.shape[0], :ct_data.shape[1], :ct_data.shape[2]]
+                            tissue_masks[tissue_name] = tissue_data > 0
+                            break
+
+                # Add skeletal if present
+                if "Skeletal" not in tissue_masks:
+                    total_dir = derivatives_dir / "total"
+                    if total_dir.exists():
+                        all_bone_mask = None
+                        for bone_pattern in TOTAL_BONE_PATTERNS:
+                            bone_files = list(total_dir.glob(f"*{bone_pattern}*.nii.gz"))
+                            for bone_file in bone_files:
+                                bone_nifti = nib.load(bone_file)
+                                bone_data = bone_nifti.get_fdata()
+                                if bone_data.shape != ct_data.shape:
+                                    bone_data = bone_data[:ct_data.shape[0], :ct_data.shape[1], :ct_data.shape[2]]
+                                bone_mask = bone_data > 0
+                                if all_bone_mask is None:
+                                    all_bone_mask = bone_mask
+                                else:
+                                    all_bone_mask = all_bone_mask | bone_mask
+                        if all_bone_mask is not None:
+                            tissue_masks["Skeletal"] = all_bone_mask
+
+        # Find liver extent
+        all_liver_mask = np.zeros_like(ct_data, dtype=bool)
+        for seg_mask in segment_masks.values():
+            all_liver_mask = all_liver_mask | seg_mask
+
+        z_indices = np.where(np.any(all_liver_mask, axis=(0, 1)))[0]
+        if len(z_indices) == 0:
+            raise ValueError("No liver voxels found in segmentation")
+
+        z_min, z_max = z_indices[0], z_indices[-1]
+        z_slices = np.linspace(z_min, z_max, num_slices, dtype=int)
+
+        # Create figure
+        fig, axes = plt.subplots(1, num_slices, figsize=(num_slices * 2, 2), dpi=dpi)
+        if num_slices == 1:
+            axes = [axes]
+
+        for idx, (ax, z) in enumerate(zip(axes, z_slices)):
+            ct_slice = ct_data[:, :, z].T
+            ct_slice_display = np.clip(ct_slice, window[0], window[1])
+            ct_slice_norm = (ct_slice_display - window[0]) / (window[1] - window[0])
+
+            ax.imshow(ct_slice_norm, cmap="gray", origin="lower", aspect="auto")
+
+            # Overlay tissue types
+            if include_tissue and tissue_masks:
+                for tissue_name, tissue_mask in tissue_masks.items():
+                    tissue_slice = tissue_mask[:, :, z].T
+                    if np.any(tissue_slice):
+                        color = DEFAULT_LABEL_COLORS.get(tissue_name, "#FFFFFF")
+                        overlay = np.zeros((*tissue_slice.shape, 4))
+                        rgb = mcolors.to_rgb(color)
+                        overlay[tissue_slice] = [*rgb, alpha]
+                        ax.imshow(overlay, origin="lower", aspect="auto")
+
+            # Overlay liver segments with distinct colors
+            for seg_idx, (seg_name, seg_mask) in enumerate(segment_masks.items()):
+                seg_slice = seg_mask[:, :, z].T
+                if np.any(seg_slice):
+                    color = SUBSEGMENT_COLORS[seg_idx % len(SUBSEGMENT_COLORS)]
+                    overlay = np.zeros((*seg_slice.shape, 4))
+                    rgb = mcolors.to_rgb(color)
+                    overlay[seg_slice] = [*rgb, alpha + 0.15]  # Slightly more opaque for segments
+                    ax.imshow(overlay, origin="lower", aspect="auto")
+
+            ax.set_title(f"{z}", fontsize=8, pad=2)
+            ax.axis("off")
+
+        # Create legend
+        legend_patches = []
+        
+        # Add tissue types to legend
+        if include_tissue and tissue_masks:
+            for tissue_name in ["SAT", "VAT", "Muscle", "Skeletal"]:
+                if tissue_name in tissue_masks:
+                    color = DEFAULT_LABEL_COLORS[tissue_name]
+                    legend_patches.append(Patch(color=color, label=tissue_name))
+
+        # Add liver segments to legend
+        for seg_idx, seg_name in enumerate(sorted(segment_masks.keys())):
+            color = SUBSEGMENT_COLORS[seg_idx % len(SUBSEGMENT_COLORS)]
+            legend_patches.append(Patch(color=color, label=seg_name))
+
+        if legend_patches:
+            fig.legend(handles=legend_patches, loc="lower center", ncol=6)
+
+        # Determine output path
+        if output_dir is None:
+            base_dir = Path(bids_root) / "derivatives" / "totalsegmentator" / subject_label
+            if session_label:
+                base_dir = base_dir / session_label
+            output_dir = base_dir / "figures"
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create filename
+        subject_id = subject_label.replace("sub-", "")
+        output_name = f"{subject_id}_liver_segments_montage.png"
+        output_png = output_dir / output_name
+
+        fig.tight_layout(rect=[0, 0.05, 1, 1])
+        fig.savefig(output_png, bbox_inches="tight")
+
+        logger.info(f"  ✓ Saved liver segments montage: {output_png}")
+        return output_png
+    finally:
+        # Always close figure to prevent memory leak
+        if fig is not None:
+            plt.close(fig)

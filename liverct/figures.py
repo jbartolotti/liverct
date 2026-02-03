@@ -26,8 +26,7 @@ ORGAN_COLORS = {
     "liver": "#8B0000",        # dark red
     "pancreas": "#FFD700",     # gold
     "spleen": "#9370DB",       # medium purple
-    "kidney_left": "#FF69B4",  # hot pink
-    "kidney_right": "#FF69B4", # hot pink
+    "kidneys": "#FF69B4",      # hot pink
     "lungs": "#87CEEB",        # sky blue
     "prostate": "#FF8C00",     # dark orange
     "heart": "#DC143C",        # crimson
@@ -774,7 +773,11 @@ def create_tissue_types_montage_from_bids(
             logger.warning(f"Skipping skeletal composite for {subject_label}: {e}")
 
     if output_dir is None:
-        output_dir = seg_dir / "figures"
+        # Place figures at subject level, not within tissue_types
+        base_dir = Path(bids_root) / "derivatives" / "totalsegmentator" / subject_label
+        if session_label:
+            base_dir = base_dir / session_label
+        output_dir = base_dir / "figures"
 
     subject_label = _normalize_subject_label(subject_label)
     session_label = _normalize_session_label(session_label)
@@ -1440,7 +1443,7 @@ def create_organ_montage(
     subject_label : str
         Subject label (with or without "sub-" prefix)
     organ : str
-        Organ name (e.g., "liver", "pancreas", "spleen", "kidney_left", "kidney_right",
+        Organ name (e.g., "liver", "pancreas", "spleen", "kidneys",
         "lungs", "prostate", "heart")
     session_label : str, optional
         Session label
@@ -1485,34 +1488,55 @@ def create_organ_montage(
 
     logger.info(f"Creating organ montage: {subject_label} - {organ}")
 
-    # Find organ mask file in total directory first
+    # Find organ mask file(s) in total directory first
     total_dir = find_total_dir(bids_root, subject_label, session_label)
     
-    # Map organ names to file patterns
+    # Map organ names to file patterns (can be list for multi-part organs)
     organ_file_patterns = {
-        "liver": "liver.nii.gz",
-        "pancreas": "pancreas.nii.gz",
-        "spleen": "spleen.nii.gz",
-        "kidney_left": "kidney_left.nii.gz",
-        "kidney_right": "kidney_right.nii.gz",
-        "lungs": "lungs.nii.gz",
-        "prostate": "prostate.nii.gz",
-        "heart": "heart.nii.gz",
+        "liver": ["liver.nii.gz"],
+        "pancreas": ["pancreas.nii.gz"],
+        "spleen": ["spleen.nii.gz"],
+        "kidneys": ["kidney_left.nii.gz", "kidney_right.nii.gz"],
+        "lungs": [
+            "lung_upper_lobe_left.nii.gz",
+            "lung_lower_lobe_left.nii.gz",
+            "lung_upper_lobe_right.nii.gz",
+            "lung_middle_lobe_right.nii.gz",
+            "lung_lower_lobe_right.nii.gz",
+        ],
+        "prostate": ["prostate.nii.gz"],
+        "heart": ["heart.nii.gz"],
     }
 
     if organ not in organ_file_patterns:
         raise ValueError(f"Unknown organ: {organ}. Available: {list(organ_file_patterns.keys())}")
 
-    organ_file = total_dir / organ_file_patterns[organ]
-    if not organ_file.exists():
-        raise FileNotFoundError(f"Organ segmentation not found: {organ_file}")
+    # Get list of files for this organ
+    organ_files = [total_dir / pattern for pattern in organ_file_patterns[organ]]
+    
+    # Check which files exist
+    existing_files = [f for f in organ_files if f.exists()]
+    if not existing_files:
+        raise FileNotFoundError(
+            f"No organ segmentation files found for {organ}. "
+            f"Expected: {[f.name for f in organ_files]}"
+        )
+    
+    if len(existing_files) < len(organ_files):
+        missing = [f.name for f in organ_files if f not in existing_files]
+        logger.warning(f"  Some {organ} files missing: {missing}")
+    
+    logger.info(f"  Found {len(existing_files)} file(s) for {organ}")
+
+    # Use first file as reference for CT matching
+    reference_file = existing_files[0]
 
     # Find CT file that matches the segmentation dimensions
     # This ensures we use the same CT that was used for segmentation
     ct_file = find_ct_matching_segmentation(
         bids_root,
         subject_label,
-        reference_seg_path=organ_file,
+        reference_seg_path=reference_file,
         session_label=session_label,
     )
     
@@ -1538,17 +1562,27 @@ def create_organ_montage(
     ct_img = nib.load(str(ct_file))
     ct_data = ct_img.get_fdata().astype(np.float32)
 
-    # Load organ mask and determine Z extent
-    organ_img = nib.load(str(organ_file))
-    organ_mask = organ_img.get_fdata() > 0
-
-    # Validate shapes match (should match now since we found CT by dimension)
-    if organ_mask.shape != ct_data.shape:
-        raise ValueError(
-            f"Shape mismatch after CT matching: "
-            f"organ {organ_mask.shape} vs CT {ct_data.shape}. "
-            f"This suggests the segmentation was created from a different CT series."
-        )
+    # Load and combine organ masks
+    organ_mask = np.zeros(ct_data.shape, dtype=bool)
+    for organ_file in existing_files:
+        logger.info(f"    Loading: {organ_file.name}")
+        organ_img = nib.load(str(organ_file))
+        part_mask = organ_img.get_fdata() > 0
+        
+        # Validate shapes match
+        if part_mask.shape != ct_data.shape:
+            logger.warning(
+                f"    Shape mismatch for {organ_file.name}: "
+                f"{part_mask.shape} vs CT {ct_data.shape}, skipping"
+            )
+            continue
+        
+        # Combine with OR operation
+        organ_mask |= part_mask
+    
+    # Check if combined mask is empty
+    if not organ_mask.any():
+        raise ValueError(f"Combined {organ} mask is empty after loading all parts")
 
     # Find Z extent (axis 2 for axial)
     axes = (0, 1)  # Sum over X and Y to get Z extent
@@ -1676,7 +1710,12 @@ def create_organ_montage(
 
         # Determine output path
         if output_dir is None:
-            output_dir = seg_dir / "figures"
+            # Place figures at subject level alongside tissue_types/ and total/
+            base_dir = Path(bids_root) / "derivatives" / "totalsegmentator" / subject_label
+            if session_label:
+                session_label_norm = session_label if session_label.startswith("ses-") else f"ses-{session_label}"
+                base_dir = base_dir / session_label_norm
+            output_dir = base_dir / "figures"
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1732,8 +1771,7 @@ def create_organ_montages(
         "liver",
         "pancreas",
         "spleen",
-        "kidney_left",
-        "kidney_right",
+        "kidneys",
         "lungs",
         "prostate",
         "heart",

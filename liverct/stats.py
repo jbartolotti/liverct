@@ -103,6 +103,7 @@ def compute_mask_statistics(
 
     ct_img = nib.load(str(ct_file))
     logger.info(f"Loaded CT: {ct_file}")
+    logger.info(f"CT shape: {ct_img.shape}, zooms: {ct_img.header.get_zooms()[:3]}")
     logger.info(f"Computing statistics for {len(mask_files)} label(s)")
     resample_cache: Dict[tuple, np.ndarray] = {}
 
@@ -113,10 +114,14 @@ def compute_mask_statistics(
             logger.info(f"Processing label: {label}")
             mask_img = nib.load(str(mask_path))
             mask = mask_img.get_fdata() > 0
+            logger.info(
+                f"Mask shape: {mask_img.shape}, zooms: {mask_img.header.get_zooms()[:3]}"
+            )
 
             voxel_count = int(mask.sum())
             if voxel_count == 0:
                 stats[label] = {"volume": 0.0, "intensity": 0.0}
+                logger.info("Voxel count is 0; volume/intensity set to 0.0")
                 continue
 
             cache_key = (mask_img.shape, mask_img.affine.tobytes())
@@ -140,10 +145,15 @@ def compute_mask_statistics(
 
             voxel_volume_mm3 = float(np.prod(mask_img.header.get_zooms()[:3]))
             values = ct_data[mask]
+            volume = float(voxel_count * voxel_volume_mm3)
+            intensity = float(np.mean(values))
             stats[label] = {
-                "volume": float(voxel_count * voxel_volume_mm3),
-                "intensity": float(np.mean(values)),
+                "volume": volume,
+                "intensity": intensity,
             }
+            logger.info(
+                f"Computed: voxels={voxel_count}, volume_mm3={volume:.6f}, intensity={intensity:.6f}"
+            )
         except Exception as e:
             logger.warning(f"Failed to compute statistics for {label}: {e}")
 
@@ -194,6 +204,22 @@ def compare_task_statistics_to_json(
     computed = compute_task_statistics(ct_file=ct_file, task_dir=task_dir, task=task)
     reference = load_statistics_json(reference_stats_json)
     diffs = compare_statistics(computed=computed, reference=reference)
+    for label in sorted(set(computed.keys()) | set(reference.keys())):
+        c = computed.get(label, {"volume": 0.0, "intensity": 0.0})
+        r = reference.get(label, {"volume": 0.0, "intensity": 0.0})
+        d = diffs.get(label, {"volume_diff": 0.0, "intensity_diff": 0.0})
+        logger.info(
+            "Compare %s | computed(volume=%.6f, intensity=%.6f) "
+            "reference(volume=%.6f, intensity=%.6f) "
+            "diff(volume=%.6f, intensity=%.6f)",
+            label,
+            float(c.get("volume", 0.0)),
+            float(c.get("intensity", 0.0)),
+            float(r.get("volume", 0.0)),
+            float(r.get("intensity", 0.0)),
+            float(d.get("volume_diff", 0.0)),
+            float(d.get("intensity_diff", 0.0)),
+        )
     return computed, diffs
 
 

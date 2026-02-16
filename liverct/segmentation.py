@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Optional, List, Tuple, Dict
 import numpy as np
 
+from .stats import compute_task_statistics, save_statistics_json, find_ct_from_source_json
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -323,7 +325,17 @@ class CTSegmentationPipeline:
             stats_file = seg_output / "statistics.json"
             # Check if segmentation outputs exist
             existing_masks = list(seg_output.glob("*.nii*"))
-            if existing_masks or (statistics and stats_file.exists()):
+            if existing_masks:
+                if statistics and task != "total":
+                    try:
+                        stats = compute_task_statistics(nifti_file, seg_output, task=task)
+                        save_statistics_json(stats, stats_file)
+                        logger.info(f"  ✓ Statistics saved to: {stats_file}")
+                    except Exception as e:
+                        logger.warning(f"  ⚠ Failed to compute statistics for {task}: {e}")
+                logger.info(f"  ↷ Output already exists for task: {task} (use overwrite=True to re-run)")
+                return True
+            if statistics and stats_file.exists():
                 logger.info(f"  ↷ Output already exists for task: {task} (use overwrite=True to re-run)")
                 return True
 
@@ -354,10 +366,18 @@ class CTSegmentationPipeline:
             # Check if output was created
             if statistics:
                 stats_file = seg_output / "statistics.json"
-                if stats_file.exists():
-                    logger.info(f"  ✓ Statistics saved to: {stats_file}")
+                if task != "total":
+                    try:
+                        stats = compute_task_statistics(nifti_file, seg_output, task=task)
+                        save_statistics_json(stats, stats_file)
+                        logger.info(f"  ✓ Statistics saved to: {stats_file}")
+                    except Exception as e:
+                        logger.warning(f"  ⚠ Failed to compute statistics for {task}: {e}")
                 else:
-                    logger.warning(f"  ⚠ Statistics file not found: {stats_file}")
+                    if stats_file.exists():
+                        logger.info(f"  ✓ Statistics saved to: {stats_file}")
+                    else:
+                        logger.warning(f"  ⚠ Statistics file not found: {stats_file}")
 
             logger.info(f"  ✓ Segmentation completed for task: {task}")
             return True
@@ -435,3 +455,58 @@ class CTSegmentationPipeline:
         logger.info(f"  Failed tasks: {failed}/{len(tasks)}")
 
         return results
+
+    def compute_statistics_only(
+        self,
+        output_dir: Path,
+        task: str,
+        nifti_file: Optional[Path] = None,
+        overwrite: bool = True,
+    ) -> bool:
+        """
+        Compute statistics.json for an existing segmentation task without re-running.
+
+        Parameters
+        ----------
+        output_dir : Path
+            Base derivatives directory containing the task folder
+        task : str
+            Task name (e.g., "tissue_types", "liver_segments", "total")
+        nifti_file : Path, optional
+            CT NIfTI file. If None, attempts to read task/source.json
+        overwrite : bool
+            Whether to overwrite an existing statistics.json (default: True)
+
+        Returns
+        -------
+        bool
+            True if statistics were computed, False otherwise
+        """
+        if nib is None:
+            logger.error("nibabel not installed. Install with: pip install nibabel")
+            return False
+
+        task_dir = Path(output_dir) / task
+        if not task_dir.exists():
+            logger.error(f"Task directory not found: {task_dir}")
+            return False
+
+        stats_file = task_dir / "statistics.json"
+        if stats_file.exists() and not overwrite:
+            logger.info(f"  ↷ Statistics already exist: {stats_file}")
+            return True
+
+        if nifti_file is None:
+            nifti_file = find_ct_from_source_json(task_dir)
+        if nifti_file is None or not Path(nifti_file).exists():
+            logger.error("CT file not found. Provide nifti_file or ensure source.json exists.")
+            return False
+
+        try:
+            stats = compute_task_statistics(nifti_file, task_dir, task=task)
+            save_statistics_json(stats, stats_file)
+            logger.info(f"  ✓ Statistics saved to: {stats_file}")
+            return True
+        except Exception as e:
+            logger.error(f"  ✗ Failed to compute statistics for {task}: {e}")
+            return False

@@ -102,8 +102,6 @@ def compute_mask_statistics(
         raise ImportError("nibabel not installed. Install with: pip install nibabel")
 
     ct_img = nib.load(str(ct_file))
-    ct_data = ct_img.get_fdata().astype(np.float32)
-    voxel_volume_mm3 = float(np.prod(ct_img.header.get_zooms()[:3]))
 
     stats: Dict[str, Dict[str, float]] = {}
 
@@ -111,17 +109,23 @@ def compute_mask_statistics(
         try:
             mask_img = nib.load(str(mask_path))
             mask = mask_img.get_fdata() > 0
-            if mask.shape != ct_data.shape:
-                logger.warning(
-                    f"Shape mismatch for {label}: {mask.shape} vs {ct_data.shape}, clipping"
-                )
-                mask = _clip_mask_to_shape(mask, ct_data.shape)
 
             voxel_count = int(mask.sum())
             if voxel_count == 0:
                 stats[label] = {"volume": 0.0, "intensity": 0.0}
                 continue
 
+            try:
+                from nibabel.processing import resample_from_to
+                ct_resampled = resample_from_to(ct_img, mask_img, order=1)
+                ct_data = ct_resampled.get_fdata().astype(np.float32)
+            except Exception as e:
+                logger.warning(f"Resampling failed for {label}, using nearest-shape clip: {e}")
+                ct_data = ct_img.get_fdata().astype(np.float32)
+                if ct_data.shape != mask.shape:
+                    ct_data = _clip_mask_to_shape(ct_data, mask.shape)
+
+            voxel_volume_mm3 = float(np.prod(mask_img.header.get_zooms()[:3]))
             values = ct_data[mask]
             stats[label] = {
                 "volume": float(voxel_count * voxel_volume_mm3),

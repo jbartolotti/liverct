@@ -102,12 +102,15 @@ def compute_mask_statistics(
         raise ImportError("nibabel not installed. Install with: pip install nibabel")
 
     ct_img = nib.load(str(ct_file))
+    logger.info(f"Loaded CT: {ct_file}")
+    logger.info(f"Computing statistics for {len(mask_files)} label(s)")
     resample_cache: Dict[tuple, np.ndarray] = {}
 
     stats: Dict[str, Dict[str, float]] = {}
 
     for label, mask_path in mask_files.items():
         try:
+            logger.info(f"Processing label: {label}")
             mask_img = nib.load(str(mask_path))
             mask = mask_img.get_fdata() > 0
 
@@ -122,8 +125,12 @@ def compute_mask_statistics(
             else:
                 try:
                     from nibabel.processing import resample_from_to
+                    logger.info(
+                        f"Resampling CT to mask grid for {label} (shape={mask_img.shape})"
+                    )
                     ct_resampled = resample_from_to(ct_img, mask_img, order=1)
                     ct_data = ct_resampled.get_fdata().astype(np.float32)
+                    logger.info(f"Resampling complete for {label}")
                 except Exception as e:
                     logger.warning(f"Resampling failed for {label}, using nearest-shape clip: {e}")
                     ct_data = ct_img.get_fdata().astype(np.float32)

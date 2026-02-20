@@ -2206,3 +2206,288 @@ def create_liver_segments_montage(
         # Always close figure to prevent memory leak
         if fig is not None:
             plt.close(fig)
+
+
+def generate_montages_from_bids(
+    bids_root: Path,
+    subjects: Optional[Union[str, List[str]]] = None,
+    session_label: Optional[str] = None,
+    montage_types: Optional[Union[str, List[str]]] = None,
+    organs_to_montage: Optional[Union[str, List[str]]] = None,
+    generate_liver_segments: bool = False,
+    series_description_pattern: Optional[str] = None,
+    include_skeletal: bool = True,
+    include_organs: Union[List[str], str, None] = None,
+    num_slices: int = 12,
+    window: Tuple[int, int] = (-200, 250),
+    alpha: float = 0.5,
+    axis: int = 2,
+    output_dir: Optional[Path] = None,
+    superior_limit: Optional[str] = None,
+    inferior_limit: Optional[str] = None,
+    cross_subject_vertebrae: Optional[List[str]] = None,
+    cross_subject_num_vertebrae: int = 7,
+    dpi: int = 200,
+) -> Dict[str, int]:
+    """
+    Generate tissue type montages, cross-subject montages, organ montages, and liver segment montages.
+
+    This is a comprehensive batch function that orchestrates the generation of multiple
+    types of montages from BIDS-formatted CT data with TotalSegmentator derivatives.
+
+    Parameters
+    ----------
+    bids_root : Path
+        Root BIDS directory
+    subjects : str, list, or None, optional
+        Subject(s) to process. None processes all subjects.
+    session_label : str, optional
+        Session label
+    montage_types : str, list, or None, optional
+        Types of montages to generate:
+        - "individual": Per-subject tissue type montages
+        - "cross-subject": Grid comparing vertebrae across subjects
+        - ["individual", "cross-subject"]: Both types
+        - None: Skip tissue montages (only organs/liver segments if configured)
+    organs_to_montage : str, list, or None, optional
+        Organs for single-organ montages:
+        - None: Skip organ montages
+        - "all": All available organs
+        - ["liver", "pancreas", "spleen"]: Specific organs
+    generate_liver_segments : bool, optional
+        Whether to generate liver segments montages (default: False)
+    series_description_pattern : str, optional
+        Pattern to match CT series description
+    include_skeletal : bool, optional
+        Include skeletal composite overlay (default: True)
+    include_organs : str, list, or None, optional
+        Organs to overlay on tissue montages:
+        - None: No organ overlays
+        - "all": All available organs
+        - ["liver"]: Specific organs
+    num_slices : int, optional
+        Number of slices in montages (default: 12)
+    window : tuple, optional
+        HU window (min, max) (default: (-200, 250))
+    alpha : float, optional
+        Overlay transparency (default: 0.5)
+    axis : int, optional
+        Slice axis for individual montages (default: 2 = axial)
+    output_dir : Path, optional
+        Output directory (None uses default BIDS derivatives structure)
+    superior_limit : str, optional
+        Superior anatomical limit (e.g., "C1", "T1")
+    inferior_limit : str, optional
+        Inferior anatomical limit (e.g., "L5", "sacrum")
+    cross_subject_vertebrae : list, optional
+        Specific vertebrae for cross-subject montage (e.g., ["T12", "L1", "L5"])
+    cross_subject_num_vertebrae : int, optional
+        Number of vertebrae for cross-subject if not specified (default: 7)
+    dpi : int, optional
+        Output resolution (default: 200)
+
+    Returns
+    -------
+    dict
+        Summary of generated montages:
+        {
+            "individual_montages": int,
+            "cross_subject_montages": int,
+            "organ_montages": int,
+            "liver_segment_montages": int
+        }
+
+    Examples
+    --------
+    Generate all montage types for all subjects:
+    >>> results = generate_montages_from_bids(
+    ...     bids_root="/path/to/bids",
+    ...     montage_types=["individual", "cross-subject"],
+    ...     organs_to_montage="all",
+    ...     generate_liver_segments=True
+    ... )
+
+    Generate only cross-subject montage with specific vertebrae:
+    >>> results = generate_montages_from_bids(
+    ...     bids_root="/path/to/bids",
+    ...     montage_types="cross-subject",
+    ...     cross_subject_vertebrae=["T9", "T10", "T11", "T12", "L1", "L2"],
+    ...     inferior_limit="sacrum"
+    ... )
+    """
+    logger.info("Starting montage generation")
+    logger.info(f"BIDS root: {bids_root}")
+    logger.info(f"Subjects: {subjects}")
+    logger.info(f"Session: {session_label}")
+    logger.info(f"Montage types: {montage_types}")
+    logger.info(f"Organs to montage: {organs_to_montage}")
+    logger.info(f"Generate liver segments: {generate_liver_segments}")
+
+    # Initialize results
+    results = {
+        "individual_montages": 0,
+        "cross_subject_montages": 0,
+        "organ_montages": 0,
+        "liver_segment_montages": 0,
+    }
+
+    # Normalize montage types
+    if montage_types is None:
+        montage_types_list = []
+    elif isinstance(montage_types, str):
+        montage_types_list = [montage_types]
+    else:
+        montage_types_list = list(montage_types)
+
+    # Generate individual subject tissue montages
+    if "individual" in montage_types_list:
+        logger.info("\n" + "=" * 60)
+        logger.info("GENERATING INDIVIDUAL SUBJECT MONTAGES")
+        logger.info("=" * 60)
+
+        montage_results = create_tissue_types_montages(
+            bids_root=bids_root,
+            subjects=subjects,
+            session_label=session_label,
+            series_description_pattern=series_description_pattern,
+            include_skeletal=include_skeletal,
+            include_organs=include_organs,
+            num_slices=num_slices,
+            window=window,
+            alpha=alpha,
+            axis=axis,
+            output_dir=output_dir,
+            superior_limit=superior_limit,
+            inferior_limit=inferior_limit,
+        )
+        results["individual_montages"] = len(montage_results)
+        logger.info(f"Generated {len(montage_results)} individual montage(s)\n")
+
+    # Generate cross-subject montage
+    if "cross-subject" in montage_types_list:
+        logger.info("\n" + "=" * 60)
+        logger.info("GENERATING CROSS-SUBJECT MONTAGE")
+        logger.info("=" * 60)
+
+        # Get subject list
+        if subjects is None:
+            subject_dirs = sorted([d for d in Path(bids_root).glob("sub-*") if d.is_dir()])
+            subjects_for_montage = [d.name for d in subject_dirs]
+        elif isinstance(subjects, str):
+            subjects_for_montage = [subjects]
+        else:
+            subjects_for_montage = list(subjects)
+
+        if subjects_for_montage:
+            try:
+                output = create_vertebrae_cross_subject_montage(
+                    bids_root=bids_root,
+                    subjects=subjects_for_montage,
+                    vertebrae=cross_subject_vertebrae,
+                    num_vertebrae=cross_subject_num_vertebrae,
+                    session_label=session_label,
+                    series_description_pattern=series_description_pattern,
+                    include_skeletal=include_skeletal,
+                    include_organs=include_organs,
+                    window=window,
+                    alpha=alpha,
+                    dpi=dpi,
+                )
+                results["cross_subject_montages"] = 1
+                logger.info(f"Generated cross-subject montage: {output}\n")
+            except Exception as e:
+                logger.error(f"Failed to generate cross-subject montage: {e}\n")
+        else:
+            logger.warning("No subjects found for cross-subject montage")
+
+    # Generate organ montages
+    if organs_to_montage is not None:
+        logger.info("\n" + "=" * 60)
+        logger.info("GENERATING ORGAN MONTAGES")
+        logger.info("=" * 60)
+
+        # Get subject list
+        if subjects is None:
+            subject_dirs = sorted([d for d in Path(bids_root).glob("sub-*") if d.is_dir()])
+            subjects_for_organs = [d.name for d in subject_dirs]
+        elif isinstance(subjects, str):
+            subjects_for_organs = [subjects]
+        else:
+            subjects_for_organs = list(subjects)
+
+        total_montages = 0
+        for subject_label in subjects_for_organs:
+            try:
+                logger.info(f"\nProcessing {subject_label}...")
+                organ_results = create_organ_montages(
+                    bids_root=bids_root,
+                    subject_label=subject_label,
+                    organs=organs_to_montage,
+                    session_label=session_label,
+                    num_slices=num_slices,
+                    window=window,
+                    alpha=alpha,
+                    dpi=dpi,
+                    include_skeletal=include_skeletal,
+                )
+                total_montages += len(organ_results)
+            except Exception as e:
+                logger.error(f"Failed to generate organ montages for {subject_label}: {e}")
+
+        results["organ_montages"] = total_montages
+        logger.info(f"\nGenerated {total_montages} organ montage(s)\n")
+
+    # Generate liver segments montages
+    if generate_liver_segments:
+        logger.info("\n" + "=" * 60)
+        logger.info("GENERATING LIVER SEGMENTS MONTAGES")
+        logger.info("=" * 60)
+
+        # Get subject list
+        if subjects is None:
+            subject_dirs = sorted([d for d in Path(bids_root).glob("sub-*") if d.is_dir()])
+            subjects_for_liver = [d.name for d in subject_dirs]
+        elif isinstance(subjects, str):
+            subjects_for_liver = [subjects]
+        else:
+            subjects_for_liver = list(subjects)
+
+        total_liver = 0
+        for subject_label in subjects_for_liver:
+            try:
+                # Check if liver_segments directory exists
+                subject_norm = subject_label if subject_label.startswith("sub-") else f"sub-{subject_label}"
+                liver_seg_dir = Path(bids_root) / "derivatives" / "totalsegmentator" / subject_norm / "liver_segments"
+                if not liver_seg_dir.exists():
+                    logger.info(f"  Skipping {subject_label} (no liver_segments directory)")
+                    continue
+
+                logger.info(f"\nProcessing {subject_label}...")
+                output = create_liver_segments_montage(
+                    bids_root=bids_root,
+                    subject_label=subject_label,
+                    session_label=session_label,
+                    num_slices=num_slices,
+                    window=window,
+                    alpha=alpha,
+                    include_tissue=include_skeletal,
+                )
+                total_liver += 1
+            except Exception as e:
+                logger.error(f"Failed to generate liver segments montage for {subject_label}: {e}")
+
+        results["liver_segment_montages"] = total_liver
+        logger.info(f"\nGenerated {total_liver} liver segments montage(s)\n")
+
+    # Clean up any remaining open figures
+    plt.close("all")
+
+    logger.info("\n" + "=" * 60)
+    logger.info("MONTAGE GENERATION COMPLETE")
+    logger.info("=" * 60)
+    logger.info(f"Individual montages: {results['individual_montages']}")
+    logger.info(f"Cross-subject montages: {results['cross_subject_montages']}")
+    logger.info(f"Organ montages: {results['organ_montages']}")
+    logger.info(f"Liver segment montages: {results['liver_segment_montages']}")
+
+    return results

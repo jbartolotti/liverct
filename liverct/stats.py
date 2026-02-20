@@ -223,6 +223,142 @@ def compare_task_statistics_to_json(
     return computed, diffs
 
 
+def compute_segmentation_statistics(
+    bids_root: Path,
+    tasks: Optional[List[str]] = None,
+    subjects: Optional[List[str]] = None,
+    session_label: Optional[str] = None,
+    overwrite: bool = True,
+) -> Dict[str, Dict[str, bool]]:
+    """
+    Compute statistics.json for existing segmentations in a BIDS dataset.
+
+    Parameters
+    ----------
+    bids_root : Path
+        Root BIDS directory
+    tasks : list of str, optional
+        Task names to compute statistics for (e.g., ["tissue_types", "liver_segments"]).
+        If None, attempts to find all task directories for each subject.
+    subjects : list of str, optional
+        Subject labels to process. If None, processes all subjects in derivatives/totalsegmentator.
+    session_label : str, optional
+        Session label (with or without "ses-" prefix)
+    overwrite : bool
+        Whether to overwrite existing statistics.json files (default: True)
+
+    Returns
+    -------
+    dict
+        Nested dictionary: {subject: {task: success_bool}}
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    
+    logger.info("Starting statistics computation for segmentations")
+    logger.info(f"BIDS root: {bids_root}")
+    logger.info(f"Tasks: {tasks if tasks else 'auto-detect'}")
+    logger.info(f"Subjects: {subjects if subjects else 'all'}")
+    logger.info(f"Session: {session_label}")
+    logger.info(f"Overwrite: {overwrite}")
+
+    bids_root = Path(bids_root)
+    derivatives_dir = bids_root / "derivatives" / "totalsegmentator"
+    
+    if not derivatives_dir.exists():
+        logger.error(f"Derivatives directory not found: {derivatives_dir}")
+        return {}
+
+    # Get subject list
+    if subjects is None:
+        subject_dirs = sorted([d for d in derivatives_dir.glob("sub-*") if d.is_dir()])
+        subject_labels = [d.name for d in subject_dirs]
+    else:
+        subject_labels = [s if s.startswith("sub-") else f"sub-{s}" for s in subjects]
+
+    logger.info(f"Found {len(subject_labels)} subject(s) to process")
+
+    results: Dict[str, Dict[str, bool]] = {}
+
+    for subject_label in subject_labels:
+        logger.info(f"\nProcessing {subject_label}")
+        subject_dir = derivatives_dir / subject_label
+        
+        if session_label:
+            ses_label = session_label if session_label.startswith("ses-") else f"ses-{session_label}"
+            subject_dir = subject_dir / ses_label
+        
+        if not subject_dir.exists():
+            logger.warning(f"  Subject directory not found: {subject_dir}")
+            continue
+
+        # Get task list
+        if tasks is None:
+            # Auto-detect task directories
+            task_dirs = [d for d in subject_dir.iterdir() if d.is_dir() and d.name != "figures"]
+            task_names = [d.name for d in task_dirs]
+        else:
+            task_names = tasks
+
+        if not task_names:
+            logger.warning(f"  No task directories found for {subject_label}")
+            continue
+
+        logger.info(f"  Tasks to process: {task_names}")
+        results[subject_label] = {}
+
+        for task in task_names:
+            task_dir = subject_dir / task
+            
+            if not task_dir.exists():
+                logger.warning(f"    Task directory not found: {task}")
+                results[subject_label][task] = False
+                continue
+
+            stats_file = task_dir / "statistics.json"
+            
+            if stats_file.exists() and not overwrite:
+                logger.info(f"    ↷ Statistics exist for {task}, skipping")
+                results[subject_label][task] = True
+                continue
+
+            # Find CT from source.json
+            ct_file = find_ct_from_source_json(task_dir)
+            if ct_file is None or not ct_file.exists():
+                logger.warning(f"    ✗ CT file not found for {task}")
+                results[subject_label][task] = False
+                continue
+
+            # Compute statistics
+            try:
+                logger.info(f"    Computing statistics for {task}...")
+                stats = compute_task_statistics(ct_file, task_dir, task=task)
+                save_statistics_json(stats, stats_file)
+                logger.info(f"    ✓ Statistics saved: {stats_file}")
+                results[subject_label][task] = True
+            except Exception as e:
+                logger.error(f"    ✗ Failed to compute statistics for {task}: {e}")
+                results[subject_label][task] = False
+
+    # Summary
+    total_tasks = sum(len(tasks) for tasks in results.values())
+    successful = sum(sum(1 for success in tasks.values() if success) for tasks in results.values())
+    failed = total_tasks - successful
+
+    logger.info(f"\n{'='*60}")
+    logger.info(f"Statistics computation complete:")
+    logger.info(f"  {successful}/{total_tasks} successful")
+    logger.info(f"  {failed}/{total_tasks} failed")
+    logger.info(f"{'='*60}")
+
+    return results
+
+
 def save_statistics_json(stats: Dict[str, Dict[str, float]], output_path: Path) -> None:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

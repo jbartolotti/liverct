@@ -185,3 +185,85 @@ class CTBIDSConverter:
                     if label:
                         return label
         return None
+
+
+def convert_dicom_directory_to_bids(
+    raw_data_dir: Path,
+    bids_root: Path,
+    config_file: Optional[Path] = None,
+    dcm2bids4ct_path: Optional[str] = None,
+    dicom_subdir: str = "DICOM",
+) -> dict:
+    """
+    Convert all CT scans in a directory to BIDS format.
+
+    Parameters
+    ----------
+    raw_data_dir : Path
+        Path to directory containing CT scan folders
+    bids_root : Path
+        Path where BIDS dataset will be created
+    config_file : Path, optional
+        Path to custom dcm2bids configuration file
+    dcm2bids4ct_path : str, optional
+        Path to dcm2bids4ct executable (if not in PATH)
+    dicom_subdir : str
+        Name of DICOM subdirectory within each CT folder (default: "DICOM")
+
+    Returns
+    -------
+    dict
+        Summary with keys: 'successful', 'failed', 'skipped'
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    
+    logger.info("Starting DICOM to BIDS conversion")
+    logger.info(f"Raw data directory: {raw_data_dir}")
+    logger.info(f"BIDS root: {bids_root}")
+
+    converter = CTBIDSConverter(dcm2bids4ct_path=dcm2bids4ct_path)
+
+    ct_folders = [d for d in Path(raw_data_dir).iterdir() if d.is_dir()]
+    logger.info(f"Found {len(ct_folders)} CT scan folders")
+
+    results = {"successful": 0, "failed": 0, "skipped": 0}
+
+    for ct_folder in sorted(ct_folders):
+        dicom_dir = ct_folder / dicom_subdir
+
+        if not dicom_dir.exists():
+            logger.warning(f"No {dicom_subdir} folder in {ct_folder.name}, skipping...")
+            results["skipped"] += 1
+            continue
+
+        logger.info(f"Converting: {ct_folder.name} (subject: auto)")
+
+        success = converter.convert(
+            dicom_dir=str(dicom_dir),
+            bids_root=str(bids_root),
+            subject_id=None,
+            config_file=str(config_file) if config_file else None,
+        )
+
+        if success:
+            results["successful"] += 1
+            logger.info(f"✓ Successfully converted {ct_folder.name}")
+        else:
+            results["failed"] += 1
+            logger.error(f"✗ Failed to convert {ct_folder.name}")
+
+    logger.info(f"\n{'='*60}")
+    logger.info(
+        f"Conversion complete: {results['successful']} successful, "
+        f"{results['failed']} failed, {results['skipped']} skipped"
+    )
+    logger.info(f"BIDS dataset location: {bids_root}")
+    logger.info(f"{'='*60}")
+
+    return results

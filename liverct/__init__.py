@@ -5,7 +5,7 @@ liverct - A Python library for liver CT image processing and analysis.
 from .bids import CTBIDSConverter, convert_dicom_directory_to_bids
 from .segmentation import CTSegmentationPipeline
 from .pipeline import BIDSProcessingPipeline
-from .stats import compute_segmentation_statistics
+from .stats import compute_segmentation_statistics, consolidate_group_statistics
 from .figures import (
 	create_label_overlay_montage,
 	create_tissue_types_montage_from_bids,
@@ -28,6 +28,7 @@ __all__ = [
 	"CTSegmentationPipeline",
 	"BIDSProcessingPipeline",
 	"compute_segmentation_statistics",
+	"consolidate_group_statistics",
 	"create_label_overlay_montage",
 	"create_tissue_types_montage_from_bids",
 	"create_tissue_types_montages",

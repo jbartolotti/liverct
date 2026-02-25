@@ -381,3 +381,141 @@ def find_ct_from_source_json(task_dir: Path) -> Optional[Path]:
         logger.warning(f"Failed to read source.json from {task_dir}: {e}")
 
     return None
+
+
+def consolidate_group_statistics(
+    bids_root: Path,
+    subjects: Optional[List[str]] = None,
+    output_file: Optional[Path] = None,
+    overwrite: bool = True,
+) -> Path:
+    """
+    Consolidate statistics.json files from all subjects into a single group TSV.
+
+    Reads statistics.json files from each subject/task combination and writes a
+    flattened TSV file suitable for statistical analysis.
+
+    Parameters
+    ----------
+    bids_root : Path
+        Root BIDS directory
+    subjects : list of str, optional
+        Subject labels to include. If None, includes all subjects in derivatives.
+        Labels can be with or without "sub-" prefix.
+    output_file : Path, optional
+        Output TSV file path. If None, defaults to
+        derivatives/totalsegmentator/group/statistics.tsv
+    overwrite : bool
+        Whether to overwrite existing output file (default: True)
+
+    Returns
+    -------
+    Path
+        Path to the output TSV file
+
+    Raises
+    ------
+    FileNotFoundError
+        If derivatives/totalsegmentator directory not found
+    """
+    import csv
+
+    bids_root = Path(bids_root)
+    derivatives_dir = bids_root / "derivatives" / "totalsegmentator"
+
+    if not derivatives_dir.exists():
+        raise FileNotFoundError(f"Derivatives directory not found: {derivatives_dir}")
+
+    # Determine output file
+    if output_file is None:
+        output_file = derivatives_dir / "group" / "statistics.tsv"
+    output_file = Path(output_file)
+
+    # Check if output exists and overwrite flag
+    if output_file.exists() and not overwrite:
+        logger.info(f"Output file exists and overwrite=False: {output_file}")
+        return output_file
+
+    # Create output directory
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Get subject list
+    if subjects is None:
+        subject_dirs = sorted([d for d in derivatives_dir.glob("sub-*") if d.is_dir()])
+        subject_labels = [d.name for d in subject_dirs]
+    else:
+        subject_labels = [s if s.startswith("sub-") else f"sub-{s}" for s in subjects]
+
+    logger.info(f"Consolidating statistics for {len(subject_labels)} subject(s)")
+    logger.info(f"Output file: {output_file}")
+
+    # Collect all rows
+    rows = []
+
+    for subject_label in subject_labels:
+        subject_dir = derivatives_dir / subject_label
+
+        if not subject_dir.exists():
+            logger.warning(f"  Subject directory not found: {subject_label}")
+            continue
+
+        logger.info(f"Processing {subject_label}")
+
+        # Find all task directories
+        task_dirs = [d for d in subject_dir.iterdir() if d.is_dir() and d.name != "figures"]
+
+        for task_dir in task_dirs:
+            task_name = task_dir.name
+            stats_file = task_dir / "statistics.json"
+
+            if not stats_file.exists():
+                logger.debug(f"  ↷ No statistics.json for {task_name}")
+                continue
+
+            try:
+                with open(stats_file, "r") as f:
+                    stats = json.load(f)
+
+                # Extract subject ID (remove "sub-" prefix)
+                subject_id = subject_label.replace("sub-", "")
+
+                # Add row for each label
+                for label, values in stats.items():
+                    volume = values.get("volume", 0.0)
+                    intensity = values.get("intensity", 0.0)
+
+                    rows.append({
+                        "subject_id": subject_id,
+                        "segmentation_type": task_name,
+                        "label": label,
+                        "volume_mm3": float(volume),
+                        "intensity_hu": float(intensity),
+                    })
+                    logger.debug(f"    {label}: volume={volume:.2f}, intensity={intensity:.2f}")
+
+                logger.info(f"  ✓ {task_name}: {len(stats)} labels")
+
+            except Exception as e:
+                logger.error(f"  ✗ Failed to read statistics for {task_name}: {e}")
+
+    # Write TSV file
+    logger.info(f"\nWriting {len(rows)} rows to TSV file...")
+
+    if not rows:
+        logger.warning("No statistics data found to consolidate")
+        return output_file
+
+    fieldnames = ["subject_id", "segmentation_type", "label", "volume_mm3", "intensity_hu"]
+
+    try:
+        with open(output_file, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t")
+            writer.writeheader()
+            writer.writerows(rows)
+
+        logger.info(f"✓ Wrote {len(rows)} rows to: {output_file}")
+        return output_file
+
+    except Exception as e:
+        logger.error(f"Failed to write output file: {e}")
+        raise

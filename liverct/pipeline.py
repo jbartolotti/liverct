@@ -108,6 +108,7 @@ class BIDSProcessingPipeline:
         nr_thr_saving: int = 6,
         overwrite: bool = False,
         output_dir: Optional[Path] = None,
+        **kwargs,
     ) -> bool:
         """
         Find, validate, and segment CT series for a single subject/session.
@@ -139,6 +140,10 @@ class BIDSProcessingPipeline:
         output_dir : Path, optional
             Where to save segmentation derivatives. If None, uses
             bids_root/derivatives/totalsegmentator/
+        **kwargs
+            Additional arguments forwarded directly to the
+            ``totalsegmentator()`` Python API (for example: ``preview=True``,
+            ``radiomics=True``).
 
         Returns
         -------
@@ -201,6 +206,7 @@ class BIDSProcessingPipeline:
                 nr_thr_resamp=nr_thr_resamp,
                 nr_thr_saving=nr_thr_saving,
                 overwrite=overwrite,
+                **kwargs,
             )
         else:
             # Multiple tasks
@@ -214,6 +220,7 @@ class BIDSProcessingPipeline:
                 nr_thr_resamp=nr_thr_resamp,
                 nr_thr_saving=nr_thr_saving,
                 overwrite=overwrite,
+                **kwargs,
             )
             success = all(results.values())
 
@@ -250,6 +257,86 @@ class BIDSProcessingPipeline:
         else:
             logger.error(f"  ✗ One or more segmentations failed")
             return False
+
+    def segment_all_subjects(
+        self,
+        tasks: Union[str, List[str]] = "total",
+        subjects: Optional[Union[str, List[str]]] = None,
+        series_description_pattern: Optional[str] = None,
+        statistics: bool = True,
+        license_number: Optional[str] = None,
+        device: str = "gpu",
+        nr_thr_resamp: int = 1,
+        nr_thr_saving: int = 6,
+        overwrite: bool = False,
+        output_dir: Optional[Path] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Run segmentation for all subjects in the BIDS dataset.
+
+        Automatically discovers all ``sub-*`` folders and processes each one.
+        Sessions (``ses-*``) are detected and iterated automatically when present.
+
+        Parameters
+        ----------
+        tasks : str or list of str
+            TotalSegmentator task(s) to run.
+            Single task: ``"total"``
+            Multiple tasks: ``["total", "tissue_types", "liver_segments"]``
+        subjects : str or list of str, optional
+            Limit processing to specific subject IDs. If None, all subjects are
+            processed. IDs can be with or without the ``sub-`` prefix.
+        series_description_pattern : str, optional
+            Regex pattern to match CT series description. Use when multiple CT
+            series exist per subject/session to select the intended one.
+        statistics : bool
+            Whether to generate volume and intensity statistics for each task.
+        license_number : str, optional
+            TotalSegmentator license key for premium tasks
+            (e.g., ``tissue_types``, ``liver_segments``).
+        device : str
+            Device for segmentation: ``"gpu"`` or ``"cpu"``.
+        nr_thr_resamp : int
+            Number of threads for resampling (lower to reduce memory pressure).
+        nr_thr_saving : int
+            Number of threads for saving output files.
+        overwrite : bool
+            If True, re-run segmentation even if output already exists.
+        output_dir : Path, optional
+            Base directory for segmentation derivatives. If None, uses
+            ``bids_root/derivatives/totalsegmentator/``.
+        **kwargs
+            Additional arguments forwarded directly to TotalSegmentator for each
+            subject/session run (for example: ``preview=True``,
+            ``radiomics=True``).
+
+        Returns
+        -------
+        dict
+            Summary with keys: ``'successful'``, ``'failed'``, ``'skipped'``.
+        """
+        def _process(subject_label, session_label=None):
+            success = self.segment_ct_series(
+                subject_label=subject_label,
+                session_label=session_label,
+                series_description_pattern=series_description_pattern,
+                tasks=tasks,
+                statistics=statistics,
+                license_number=license_number,
+                device=device,
+                nr_thr_resamp=nr_thr_resamp,
+                nr_thr_saving=nr_thr_saving,
+                overwrite=overwrite,
+                output_dir=output_dir,
+                **kwargs,
+            )
+            return "successful" if success else "failed"
+
+        return self.process_all_subjects(
+            process_func=_process,
+            subjects=subjects,
+        )
 
     @staticmethod
     def _log_summary(results: Dict[str, int]):

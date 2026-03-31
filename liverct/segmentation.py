@@ -339,6 +339,22 @@ class CTSegmentationPipeline:
                 logger.info(f"  ↷ Output already exists for task: {task} (use overwrite=True to re-run)")
                 return True
 
+        # Validate GPU availability; fall back to CPU with a warning if not found
+        if device == "gpu":
+            try:
+                import torch
+                if not torch.cuda.is_available():
+                    logger.warning(
+                        "  ⚠ device='gpu' requested but no CUDA GPU detected — falling back to CPU. "
+                        "Pass device='cpu' explicitly to suppress this warning."
+                    )
+                    device = "cpu"
+            except ImportError:
+                logger.warning(
+                    "  ⚠ device='gpu' requested but PyTorch is not installed — falling back to CPU."
+                )
+                device = "cpu"
+
         logger.info(f"Running TotalSegmentator task: {task}")
         logger.info(f"  Input: {nifti_file}")
         logger.info(f"  Output: {seg_output}")

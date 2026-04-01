@@ -289,6 +289,7 @@ class BIDSProcessingPipeline:
         self,
         tasks: Optional[Union[str, List[str]]] = "total",
         subjects: Optional[Union[str, List[str]]] = None,
+        session_label: Optional[str] = None,
         series_description_pattern: Optional[str] = None,
         statistics: bool = True,
         license_number: Optional[str] = None,
@@ -350,6 +351,9 @@ class BIDSProcessingPipeline:
         subjects : str or list of str, optional
             Limit processing to specific subject IDs. If None, all subjects are
             processed. IDs can be with or without the ``sub-`` prefix.
+        session_label : str, optional
+            Limit processing to a specific session (e.g. ``"ses-01"`` or ``"01"``).
+            If None, all sessions are iterated automatically.
         series_description_pattern : str, optional
             Regex pattern to match CT series description.
         statistics : bool

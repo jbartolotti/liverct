@@ -373,6 +373,31 @@ def run_job_graph(
     job_results: Dict[str, str] = {}
     attempts_by_job: Dict[str, int] = {j.id: 0 for j in jobs}
 
+    def _current_summary() -> Dict[str, Any]:
+        return {
+            "successful": len(successful),
+            "failed": len(failed),
+            "skipped": len(skipped),
+            "job_results": dict(job_results),
+        }
+
+    def _write_manifest_checkpoint() -> None:
+        if manifest_path is None:
+            return
+        try:
+            _write_manifest_file(
+                summary=_current_summary(),
+                job_meta=job_meta,
+                run_started=run_started,
+                run_ended=time.time(),
+                manifest_path=Path(manifest_path),
+            )
+        except Exception as e:
+            logger.warning("Failed to write scheduler manifest checkpoint: %s", e)
+
+    # Emit an initial checkpoint so long runs have an on-disk manifest quickly.
+    _write_manifest_checkpoint()
+
     def _mark_skippable() -> bool:
         changed = False
         for job_id, job in list(pending.items()):
@@ -383,6 +408,7 @@ def run_job_graph(
                 if job_meta[job_id]["end_time"] is None:
                     job_meta[job_id]["end_time"] = time.time()
                 del pending[job_id]
+                _write_manifest_checkpoint()
                 changed = True
         return changed
 
@@ -400,7 +426,11 @@ def run_job_graph(
                 for job_id in list(pending.keys()):
                     skipped.add(job_id)
                     job_results[job_id] = "skipped"
+                    job_meta[job_id]["status"] = "skipped"
+                    if job_meta[job_id]["end_time"] is None:
+                        job_meta[job_id]["end_time"] = time.time()
                     del pending[job_id]
+                _write_manifest_checkpoint()
                 break
 
             for job in sorted(ready, key=lambda j: j.id):
@@ -410,6 +440,8 @@ def run_job_graph(
                 start_ts = time.time()
                 if job_meta[job.id]["start_time"] is None:
                     job_meta[job.id]["start_time"] = start_ts
+                job_meta[job.id]["status"] = "running"
+                _write_manifest_checkpoint()
                 try:
                     ok = bool(_handler_for(job)(job))
                 except Exception:
@@ -438,6 +470,7 @@ def run_job_graph(
                     job_meta[job.id]["duration_seconds"] = (
                         job_meta[job.id]["end_time"] - job_meta[job.id]["start_time"]
                     )
+                    _write_manifest_checkpoint()
                 else:
                     if attempts_by_job[job.id] <= max_retries:
                         logger.warning(
@@ -446,7 +479,9 @@ def run_job_graph(
                             max_retries + 1,
                             job.id,
                         )
+                        job_meta[job.id]["status"] = "pending"
                         pending[job.id] = job
+                        _write_manifest_checkpoint()
                         continue
 
                     failed.add(job.id)
@@ -456,6 +491,7 @@ def run_job_graph(
                     job_meta[job.id]["duration_seconds"] = (
                         job_meta[job.id]["end_time"] - job_meta[job.id]["start_time"]
                     )
+                    _write_manifest_checkpoint()
                     if not continue_on_error:
                         raise RuntimeError(f"Job failed: {job.id}")
 
@@ -509,7 +545,15 @@ def run_job_graph(
                     logger.exception("No handler for job: %s", job.id)
                     failed.add(job.id)
                     job_results[job.id] = "failed"
+                    job_meta[job.id]["status"] = "failed"
+                    job_meta[job.id]["end_time"] = time.time()
+                    if job_meta[job.id]["start_time"] is None:
+                        job_meta[job.id]["start_time"] = job_meta[job.id]["end_time"]
+                    job_meta[job.id]["duration_seconds"] = (
+                        job_meta[job.id]["end_time"] - job_meta[job.id]["start_time"]
+                    )
                     del pending[job.id]
+                    _write_manifest_checkpoint()
                     if not continue_on_error:
                         raise
                     continue
@@ -533,15 +577,21 @@ def run_job_graph(
                     "start_time": start_ts,
                     "lane": lane,
                 }
+                job_meta[job.id]["status"] = "running"
                 submitted.add(job.id)
                 del pending[job.id]
+                _write_manifest_checkpoint()
 
             if not running:
                 # No running jobs and none newly ready; remaining jobs are unschedulable.
                 for job_id in list(pending.keys()):
                     skipped.add(job_id)
                     job_results[job_id] = "skipped"
+                    job_meta[job_id]["status"] = "skipped"
+                    if job_meta[job_id]["end_time"] is None:
+                        job_meta[job_id]["end_time"] = time.time()
                     del pending[job_id]
+                _write_manifest_checkpoint()
                 break
 
             done, _ = wait(set(running.keys()), return_when=FIRST_COMPLETED)
@@ -584,6 +634,7 @@ def run_job_graph(
                     job_meta[job.id]["duration_seconds"] = (
                         job_meta[job.id]["end_time"] - job_meta[job.id]["start_time"]
                     )
+                    _write_manifest_checkpoint()
                 else:
                     if attempts_by_job[job.id] <= max_retries:
                         logger.warning(
@@ -592,8 +643,10 @@ def run_job_graph(
                             max_retries + 1,
                             job.id,
                         )
+                        job_meta[job.id]["status"] = "pending"
                         pending[job.id] = job
                         submitted.discard(job.id)
+                        _write_manifest_checkpoint()
                         continue
 
                     failed.add(job.id)
@@ -603,6 +656,7 @@ def run_job_graph(
                     job_meta[job.id]["duration_seconds"] = (
                         job_meta[job.id]["end_time"] - job_meta[job.id]["start_time"]
                     )
+                    _write_manifest_checkpoint()
                     if not continue_on_error:
                         raise RuntimeError(f"Job failed: {job.id}")
 
@@ -623,15 +677,13 @@ def run_job_graph(
     return summary
 
 
-def _finalize_scheduler_outputs(
+def _build_manifest(
     summary: Dict[str, Any],
     job_meta: Dict[str, Dict[str, Any]],
     run_started: float,
     run_ended: float,
-    manifest_path: Optional[Path] = None,
-    timeline_figure_path: Optional[Path] = None,
-) -> None:
-    """Write optional run manifest and timeline figure outputs."""
+) -> Dict[str, Any]:
+    """Build a scheduler manifest dictionary from current state."""
     manifest = {
         "run": {
             "started_at": datetime.fromtimestamp(run_started, tz=timezone.utc).isoformat(),
@@ -658,11 +710,54 @@ def _finalize_scheduler_outputs(
             ).isoformat()
         manifest["jobs"].append(rec)
 
+    return manifest
+
+
+def _write_manifest_file(
+    summary: Dict[str, Any],
+    job_meta: Dict[str, Dict[str, Any]],
+    run_started: float,
+    run_ended: float,
+    manifest_path: Path,
+) -> Dict[str, Any]:
+    """Write scheduler manifest JSON and return the manifest dict."""
+    manifest = _build_manifest(
+        summary=summary,
+        job_meta=job_meta,
+        run_started=run_started,
+        run_ended=run_ended,
+    )
+    manifest_file = Path(manifest_path)
+    manifest_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(manifest_file, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+    return manifest
+
+
+def _finalize_scheduler_outputs(
+    summary: Dict[str, Any],
+    job_meta: Dict[str, Dict[str, Any]],
+    run_started: float,
+    run_ended: float,
+    manifest_path: Optional[Path] = None,
+    timeline_figure_path: Optional[Path] = None,
+) -> None:
+    """Write optional run manifest and timeline figure outputs."""
+    manifest = _build_manifest(
+        summary=summary,
+        job_meta=job_meta,
+        run_started=run_started,
+        run_ended=run_ended,
+    )
+
     if manifest_path is not None:
-        manifest_file = Path(manifest_path)
-        manifest_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(manifest_file, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2)
+        _write_manifest_file(
+            summary=summary,
+            job_meta=job_meta,
+            run_started=run_started,
+            run_ended=run_ended,
+            manifest_path=Path(manifest_path),
+        )
 
     if timeline_figure_path is not None:
         try:

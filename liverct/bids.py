@@ -193,9 +193,14 @@ def convert_dicom_directory_to_bids(
     config_file: Optional[Path] = None,
     dcm2bids4ct_path: Optional[str] = None,
     dicom_subdir: str = "DICOM",
+    overwrite: bool = False,
 ) -> dict:
     """
     Convert all CT scans in a directory to BIDS format.
+
+    Automatically skips subjects that have already been converted to BIDS
+    (i.e., have existing .nii.gz files in bids_root/sub-*/ct/), unless
+    overwrite=True.
 
     Parameters
     ----------
@@ -209,6 +214,9 @@ def convert_dicom_directory_to_bids(
         Path to dcm2bids4ct executable (if not in PATH)
     dicom_subdir : str
         Name of DICOM subdirectory within each CT folder (default: "DICOM")
+    overwrite : bool
+        If True, re-convert all subjects even if they already exist in BIDS.
+        If False (default), skip already-converted subjects.
 
     Returns
     -------
@@ -226,6 +234,10 @@ def convert_dicom_directory_to_bids(
     logger.info("Starting DICOM to BIDS conversion")
     logger.info(f"Raw data directory: {raw_data_dir}")
     logger.info(f"BIDS root: {bids_root}")
+    if not overwrite:
+        logger.info("Skipping already-converted subjects (overwrite=False)")
+    else:
+        logger.info("Re-converting all subjects (overwrite=True)")
 
     converter = CTBIDSConverter(dcm2bids4ct_path=dcm2bids4ct_path)
 
@@ -241,6 +253,22 @@ def convert_dicom_directory_to_bids(
             logger.warning(f"No {dicom_subdir} folder in {ct_folder.name}, skipping...")
             results["skipped"] += 1
             continue
+
+        # Try to derive subject label to check if already converted
+        subject_label = _try_derive_subject_label(dicom_dir)
+        
+        if subject_label and not overwrite:
+            # Check if subject already has BIDS CT files
+            subject_ct_dir = Path(bids_root) / f"sub-{subject_label}" / "ct"
+            if subject_ct_dir.exists():
+                existing_nifti = list(subject_ct_dir.glob("*.nii.gz"))
+                if existing_nifti:
+                    logger.info(
+                        f"Subject sub-{subject_label} already converted "
+                        f"({len(existing_nifti)} NIfTI file(s) found), skipping..."
+                    )
+                    results["skipped"] += 1
+                    continue
 
         logger.info(f"Converting: {ct_folder.name} (subject: auto)")
 
@@ -267,3 +295,47 @@ def convert_dicom_directory_to_bids(
     logger.info(f"{'='*60}")
 
     return results
+
+
+def _try_derive_subject_label(dicom_path: Path) -> Optional[str]:
+    """
+    Attempt to derive subject label from DICOM headers.
+    
+    Returns None if derivation fails (so we proceed with conversion anyway).
+    """
+    try:
+        import pydicom
+    except Exception:
+        return None
+
+    try:
+        for file_path in dicom_path.rglob("*"):
+            if not file_path.is_file():
+                continue
+            try:
+                dcm = pydicom.dcmread(str(file_path), stop_before_pixels=True)
+                # Try PatientID first
+                if hasattr(dcm, "PatientID") and dcm.PatientID:
+                    label = str(dcm.PatientID).strip()
+                    label = CTBIDSConverter._sanitize_bids_label(label)
+                    if label:
+                        return label
+                # Try PatientName
+                if hasattr(dcm, "PatientName") and dcm.PatientName:
+                    label = str(dcm.PatientName).strip()
+                    label = CTBIDSConverter._sanitize_bids_label(label)
+                    if label:
+                        return label
+                # Try AccessionNumber
+                if hasattr(dcm, "AccessionNumber") and dcm.AccessionNumber:
+                    label = str(dcm.AccessionNumber).strip()
+                    label = CTBIDSConverter._sanitize_bids_label(label)
+                    if label:
+                        return label
+                break
+            except Exception:
+                continue
+    except Exception:
+        pass
+    
+    return None

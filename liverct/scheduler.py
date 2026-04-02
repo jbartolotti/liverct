@@ -526,6 +526,8 @@ def run_job_graph(
     submitted: set = set()
     gpu_free_lanes = list(range(gpu_workers))
     cpu_free_lanes = list(range(cpu_workers))
+    gpu_occupied_lanes: set = set()
+    cpu_occupied_lanes: set = set()
     with ThreadPoolExecutor(max_workers=gpu_workers) as gpu_pool, ThreadPoolExecutor(
         max_workers=cpu_workers
     ) as cpu_pool:
@@ -558,11 +560,24 @@ def run_job_graph(
                         raise
                     continue
 
-                pool = gpu_pool if job.resource_type == "gpu" else cpu_pool
                 if job.resource_type == "gpu":
-                    lane = gpu_free_lanes.pop(0) if gpu_free_lanes else 0
+                    if not gpu_free_lanes:
+                        # No GPU lane is currently free; try this job on a later scheduler tick.
+                        continue
+                    pool = gpu_pool
+                    lane = gpu_free_lanes.pop(0)
+                    if lane in gpu_occupied_lanes:
+                        raise RuntimeError(f"Scheduler lane invariant violated (GPU lane busy): {lane}")
+                    gpu_occupied_lanes.add(lane)
                 else:
-                    lane = cpu_free_lanes.pop(0) if cpu_free_lanes else 0
+                    if not cpu_free_lanes:
+                        # No CPU lane is currently free; try this job on a later scheduler tick.
+                        continue
+                    pool = cpu_pool
+                    lane = cpu_free_lanes.pop(0)
+                    if lane in cpu_occupied_lanes:
+                        raise RuntimeError(f"Scheduler lane invariant violated (CPU lane busy): {lane}")
+                    cpu_occupied_lanes.add(lane)
 
                 attempt_idx = attempts_by_job[job.id] + 1
                 attempts_by_job[job.id] = attempt_idx
@@ -607,9 +622,11 @@ def run_job_graph(
                 end_ts = time.time()
                 lane = int(ctx["lane"])
                 if job.resource_type == "gpu":
+                    gpu_occupied_lanes.discard(lane)
                     gpu_free_lanes.append(lane)
                     gpu_free_lanes.sort()
                 else:
+                    cpu_occupied_lanes.discard(lane)
                     cpu_free_lanes.append(lane)
                     cpu_free_lanes.sort()
 

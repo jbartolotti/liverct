@@ -11,6 +11,7 @@ from .scheduler import (
 	build_segmentation_jobs,
 	build_processing_jobs,
 	run_job_graph,
+	timeline_from_manifest,
 )
 from .stats import compute_segmentation_statistics, consolidate_group_statistics
 from .figures import (
@@ -39,6 +40,7 @@ __all__ = [
 	"build_segmentation_jobs",
 	"build_processing_jobs",
 	"run_job_graph",
+	"timeline_from_manifest",
 	"compute_segmentation_statistics",
 	"consolidate_group_statistics",
 	"create_label_overlay_montage",

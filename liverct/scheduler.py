@@ -857,6 +857,39 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
     plt.close(fig)
 
 
+def timeline_from_manifest(
+    manifest_path: Union[str, Path],
+    output_png: Union[str, Path],
+) -> None:
+    """Render a scheduler timeline PNG from an existing manifest JSON file.
+
+    Useful for generating (or regenerating) the timeline figure after a
+    crashed run, using the incremental manifest that was written during
+    execution.
+
+    Parameters
+    ----------
+    manifest_path : str or Path
+        Path to the manifest JSON file written by ``run_job_graph``.
+    output_png : str or Path
+        Destination path for the output PNG file.  Parent directories are
+        created automatically.
+
+    Raises
+    ------
+    FileNotFoundError
+        If *manifest_path* does not exist.
+    ImportError
+        If matplotlib is not installed.
+    """
+    manifest_path = Path(manifest_path)
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Manifest file not found: {manifest_path}")
+    with open(manifest_path, "r", encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    _write_timeline_figure(manifest, Path(output_png))
+
+
 def run_segmentation_jobs(
     jobs: List[SegmentationJob],
     run_job: Callable[[SegmentationJob], bool],

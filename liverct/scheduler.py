@@ -6,6 +6,7 @@ pipeline code remains readable and execution policy can evolve independently.
 
 import logging
 import json
+import gc
 import time
 from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED
 from dataclasses import dataclass, field
@@ -288,6 +289,7 @@ def run_job_graph(
     max_retries: int = 0,
     manifest_path: Optional[Path] = None,
     timeline_figure_path: Optional[Path] = None,
+    memory_cleanup_after_job: bool = False,
 ) -> Dict[str, Any]:
     """
     Execute dependency-aware jobs with separate GPU and CPU worker pools.
@@ -313,6 +315,10 @@ def run_job_graph(
         If provided, write a structured JSON run manifest to this path.
     timeline_figure_path : Path, optional
         If provided, write a timeline figure of scheduled jobs.
+    memory_cleanup_after_job : bool
+        If True, run ``gc.collect()`` after every completed job attempt.
+        For successful/failed ``segment`` jobs on GPU resources, also try
+        ``torch.cuda.empty_cache()`` to release cached CUDA allocations.
 
     Returns
     -------
@@ -395,6 +401,23 @@ def run_job_graph(
         except Exception as e:
             logger.warning("Failed to write scheduler manifest checkpoint: %s", e)
 
+    def _cleanup_after_job(job: SegmentationJob) -> None:
+        if not memory_cleanup_after_job:
+            return
+
+        # Trigger Python GC for all jobs to reduce lingering heap usage.
+        gc.collect()
+
+        # For GPU segmentation jobs, try to release cached CUDA memory.
+        if job.job_type == "segment" and job.resource_type == "gpu":
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception as e:
+                logger.debug("CUDA cache cleanup skipped: %s", e)
+
     # Emit an initial checkpoint so long runs have an on-disk manifest quickly.
     _write_manifest_checkpoint()
 
@@ -448,6 +471,7 @@ def run_job_graph(
                     logger.exception("Job crashed: %s", job.id)
                     ok = False
                 end_ts = time.time()
+                _cleanup_after_job(job)
 
                 job_meta[job.id]["attempts"] = attempts_by_job[job.id]
                 job_meta[job.id]["attempt_records"].append(
@@ -618,6 +642,7 @@ def run_job_graph(
                 except Exception:
                     logger.exception("Job crashed: %s", job.id)
                     ok = False
+                _cleanup_after_job(job)
 
                 end_ts = time.time()
                 lane = int(ctx["lane"])
@@ -866,10 +891,17 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
     legend_handles = []
     for job_type, color in color_map.items():
         legend_handles.append(Rectangle((0, 0), 1, 1, facecolor=color, edgecolor="black", linewidth=0.5, label=job_type))
-    ax.legend(handles=legend_handles, loc="upper right", fontsize=8)
+    ax.legend(
+        handles=legend_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.18),
+        ncol=max(1, min(len(legend_handles), 3)),
+        fontsize=8,
+        frameon=False,
+    )
 
     output_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0.08, 1, 1))
     fig.savefig(output_png)
     plt.close(fig)
 
@@ -917,6 +949,7 @@ def run_segmentation_jobs(
     max_retries: int = 0,
     manifest_path: Optional[Path] = None,
     timeline_figure_path: Optional[Path] = None,
+    memory_cleanup_after_job: bool = False,
 ) -> Dict[str, Any]:
     """
     Execute segmentation jobs sequentially or in parallel.
@@ -942,6 +975,8 @@ def run_segmentation_jobs(
         Optional JSON run manifest output path.
     timeline_figure_path : Path, optional
         Optional timeline figure output path.
+    memory_cleanup_after_job : bool
+        If True, perform per-job memory cleanup after each completed attempt.
 
     Returns
     -------
@@ -962,4 +997,5 @@ def run_segmentation_jobs(
         max_retries=max_retries,
         manifest_path=manifest_path,
         timeline_figure_path=timeline_figure_path,
+        memory_cleanup_after_job=memory_cleanup_after_job,
     )

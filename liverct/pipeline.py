@@ -331,6 +331,7 @@ class BIDSProcessingPipeline:
         max_retries: int = 0,
         manifest_path: Optional[Path] = None,
         timeline_figure_path: Optional[Path] = None,
+        memory_cleanup_after_job: bool = False,
         continue_on_error: bool = True,
         **kwargs,
     ) -> Dict[str, Any]:
@@ -442,6 +443,10 @@ class BIDSProcessingPipeline:
             Output path for structured scheduler run manifest JSON.
         timeline_figure_path : Path, optional
             Output path for scheduler timeline figure.
+        memory_cleanup_after_job : bool
+            If True, perform per-job cleanup after each completed attempt:
+            ``gc.collect()`` for all jobs and ``torch.cuda.empty_cache()``
+            after GPU segmentation jobs.
         continue_on_error : bool
             If False, raise ``RuntimeError`` if any job fails.
         **kwargs
@@ -669,6 +674,7 @@ class BIDSProcessingPipeline:
                 max_retries=max_retries,
                 manifest_path=manifest_path,
                 timeline_figure_path=timeline_figure_path,
+                memory_cleanup_after_job=memory_cleanup_after_job,
             )
         else:
             results = run_segmentation_jobs(
@@ -681,6 +687,7 @@ class BIDSProcessingPipeline:
                 max_retries=max_retries,
                 manifest_path=manifest_path,
                 timeline_figure_path=timeline_figure_path,
+                memory_cleanup_after_job=memory_cleanup_after_job,
             )
 
         self._log_summary(results)

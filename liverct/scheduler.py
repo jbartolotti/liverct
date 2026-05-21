@@ -927,17 +927,16 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
         category_handles.append(
             Rectangle((0, 0), 1, 1, facecolor=color, edgecolor="#444444", linewidth=0.7, label=job_type)
         )
-    category_legend = ax.legend(
+    fig.legend(
         handles=category_handles,
-        loc="upper center",
-        bbox_to_anchor=(0.5, -0.20),
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.10),
         ncol=max(1, min(len(category_handles), 3)),
         fontsize=8,
         frameon=False,
         title="Task category (fill)",
         title_fontsize=8,
     )
-    ax.add_artist(category_legend)
 
     participant_handles = []
     for subject in subject_order:
@@ -945,10 +944,10 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
             Line2D([0], [0], color=subject_edge_map[subject], lw=2.2, label=subject)
         )
     if participant_handles:
-        ax.legend(
+        fig.legend(
             handles=participant_handles,
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.36),
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.03),
             ncol=max(1, min(len(participant_handles), 4)),
             fontsize=8,
             frameon=False,
@@ -957,7 +956,7 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
         )
 
     output_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout(rect=(0, 0.18, 1, 1))
+    fig.subplots_adjust(bottom=0.33)
     fig.savefig(output_png)
     plt.close(fig)
 

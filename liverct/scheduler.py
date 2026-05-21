@@ -890,8 +890,8 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
 
     for seg in segments:
         y = lane_to_y[seg["lane"]]
-        x0 = seg["start"] - min_t
-        w = max(0.05, seg["end"] - seg["start"])
+        x0 = (seg["start"] - min_t) / 60.0
+        w = max(0.05 / 60.0, (seg["end"] - seg["start"]) / 60.0)
         color = color_map.get(seg["job_type"], "#777777")
         edge_color = subject_edge_map.get(seg["subject"], "#222222")
         rect = Rectangle((x0, y - 0.35), w, 0.7, facecolor=color, edgecolor=edge_color, linewidth=1.4)
@@ -911,11 +911,12 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
             bbox={"boxstyle": "round,pad=0.15", "facecolor": "white", "edgecolor": "none", "alpha": 0.75},
         )
 
-    ax.set_xlim(0, max(1.0, max_t - min_t))
+    run_minutes = (max_t - min_t) / 60.0
+    ax.set_xlim(0, max(1.0 / 60.0, run_minutes))
     ax.set_ylim(-1, len(lane_order))
     ax.set_yticks([lane_to_y[l] for l in lane_order])
     ax.set_yticklabels(lane_order)
-    ax.set_xlabel("Time (seconds since scheduler start)")
+    ax.set_xlabel("Time (minutes since scheduler start)")
     ax.set_ylabel("Worker lane")
     ax.set_title("Scheduler Timeline")
     ax.grid(axis="x", linestyle="--", alpha=0.3)
@@ -928,7 +929,7 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
     category_legend = ax.legend(
         handles=category_handles,
         loc="upper center",
-        bbox_to_anchor=(0.5, -0.18),
+        bbox_to_anchor=(0.5, -0.12),
         ncol=max(1, min(len(category_handles), 3)),
         fontsize=8,
         frameon=False,
@@ -946,7 +947,7 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
         ax.legend(
             handles=participant_handles,
             loc="upper center",
-            bbox_to_anchor=(0.5, -0.30),
+            bbox_to_anchor=(0.5, -0.24),
             ncol=max(1, min(len(participant_handles), 4)),
             fontsize=8,
             frameon=False,
@@ -955,7 +956,7 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
         )
 
     output_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout(rect=(0, 0.16, 1, 1))
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
     fig.savefig(output_png)
     plt.close(fig)
 

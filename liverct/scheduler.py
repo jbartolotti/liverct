@@ -860,7 +860,7 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
     lane_to_y = {lane: i for i, lane in enumerate(lane_order)}
 
     color_map = {
-        "segment": "#4C78A8",
+        "segment": "#88B2E0",
         "stats": "#F58518",
         "vertebrae_report": "#54A24B",
         "figures": "#72B7B2",
@@ -917,6 +917,7 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
     ax.set_yticks([lane_to_y[l] for l in lane_order])
     ax.set_yticklabels(lane_order)
     ax.set_xlabel("Time (minutes since scheduler start)")
+    ax.xaxis.labelpad = 16
     ax.set_ylabel("Worker lane")
     ax.set_title("Scheduler Timeline")
     ax.grid(axis="x", linestyle="--", alpha=0.3)
@@ -929,7 +930,7 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
     category_legend = ax.legend(
         handles=category_handles,
         loc="upper center",
-        bbox_to_anchor=(0.5, -0.12),
+        bbox_to_anchor=(0.5, -0.20),
         ncol=max(1, min(len(category_handles), 3)),
         fontsize=8,
         frameon=False,
@@ -947,7 +948,7 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
         ax.legend(
             handles=participant_handles,
             loc="upper center",
-            bbox_to_anchor=(0.5, -0.24),
+            bbox_to_anchor=(0.5, -0.36),
             ncol=max(1, min(len(participant_handles), 4)),
             fontsize=8,
             frameon=False,
@@ -956,7 +957,7 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
         )
 
     output_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout(rect=(0, 0.04, 1, 1))
+    fig.tight_layout(rect=(0, 0.18, 1, 1))
     fig.savefig(output_png)
     plt.close(fig)
 

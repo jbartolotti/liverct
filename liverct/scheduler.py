@@ -913,11 +913,11 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
 
     run_minutes = (max_t - min_t) / 60.0
     ax.set_xlim(0, max(1.0 / 60.0, run_minutes))
+    ax.margins(x=0)
     ax.set_ylim(-1, len(lane_order))
     ax.set_yticks([lane_to_y[l] for l in lane_order])
     ax.set_yticklabels(lane_order)
-    ax.set_xlabel("Time (minutes since scheduler start)")
-    ax.xaxis.labelpad = 16
+    ax.set_xlabel("")
     ax.set_ylabel("Worker lane")
     ax.set_title("Scheduler Timeline")
     ax.grid(axis="x", linestyle="--", alpha=0.3)
@@ -955,8 +955,17 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
             title_fontsize=8,
         )
 
+    fig.text(
+        0.07,
+        0.165,
+        "Time (minutes since scheduler start)",
+        ha="left",
+        va="center",
+        fontsize=8,
+    )
+
     output_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.subplots_adjust(bottom=0.33)
+    fig.subplots_adjust(left=0.07, right=0.99, bottom=0.27, top=0.90)
     fig.savefig(output_png)
     plt.close(fig)
 

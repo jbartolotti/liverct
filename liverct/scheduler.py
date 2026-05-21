@@ -812,6 +812,7 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
     """Render a scheduler timeline figure from manifest attempt records."""
     try:
         import matplotlib.pyplot as plt
+        from matplotlib.lines import Line2D
         from matplotlib.patches import Rectangle
     except ImportError as e:
         raise ImportError("matplotlib is required for timeline figure output") from e
@@ -824,6 +825,7 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
     min_t = None
     max_t = None
     lane_keys = set()
+    subject_labels = set()
 
     for job in jobs:
         attempt_records = job.get("attempt_records", [])
@@ -834,13 +836,16 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
                 continue
             lane_key = f"{rec.get('resource_type', 'cpu').upper()}-{rec.get('lane', 0)}"
             lane_keys.add(lane_key)
+            subject_label = str(job.get("subject_label", "") or "")
+            if subject_label:
+                subject_labels.add(subject_label)
             segments.append(
                 {
                     "start": float(s),
                     "end": float(e),
                     "lane": lane_key,
                     "job_type": job.get("job_type", "segment"),
-                    "subject": job.get("subject_label", ""),
+                    "subject": subject_label,
                     "tasks": job.get("tasks", ""),
                     "status": rec.get("status", ""),
                 }
@@ -858,26 +863,53 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
         "segment": "#4C78A8",
         "stats": "#F58518",
         "vertebrae_report": "#54A24B",
+        "figures": "#72B7B2",
         "group_stats": "#B279A2",
         "cross_subject_montage": "#E45756",
+    }
+    subject_order = sorted(subject_labels)
+    subject_palette = [
+        "#1B9E77",
+        "#D95F02",
+        "#7570B3",
+        "#E7298A",
+        "#66A61E",
+        "#E6AB02",
+        "#A6761D",
+        "#666666",
+    ]
+    subject_edge_map = {
+        subject: subject_palette[i % len(subject_palette)]
+        for i, subject in enumerate(subject_order)
     }
 
     width = max(10.0, min(24.0, (max_t - min_t) / 120.0))
     height = max(3.0, 0.8 * max(1, len(lane_order)))
-    fig, ax = plt.subplots(figsize=(width, height), dpi=150)
+    fig, ax = plt.subplots(figsize=(width, height), dpi=150, facecolor="#F5F5F5")
+    ax.set_facecolor("#F5F5F5")
 
     for seg in segments:
         y = lane_to_y[seg["lane"]]
         x0 = seg["start"] - min_t
         w = max(0.05, seg["end"] - seg["start"])
         color = color_map.get(seg["job_type"], "#777777")
-        rect = Rectangle((x0, y - 0.35), w, 0.7, facecolor=color, edgecolor="black", linewidth=0.5)
+        edge_color = subject_edge_map.get(seg["subject"], "#222222")
+        rect = Rectangle((x0, y - 0.35), w, 0.7, facecolor=color, edgecolor=edge_color, linewidth=1.4)
         ax.add_patch(rect)
 
-        label = f"{seg['subject']}:{seg['tasks']}"
+        label = str(seg["tasks"])
         if len(label) > 30:
             label = label[:27] + "..."
-        ax.text(x0 + w / 2.0, y, label, ha="center", va="center", fontsize=7, color="white")
+        ax.text(
+            x0 + w / 2.0,
+            y,
+            label,
+            ha="center",
+            va="center",
+            fontsize=7,
+            color="#111111",
+            bbox={"boxstyle": "round,pad=0.15", "facecolor": "white", "edgecolor": "none", "alpha": 0.75},
+        )
 
     ax.set_xlim(0, max(1.0, max_t - min_t))
     ax.set_ylim(-1, len(lane_order))
@@ -888,20 +920,42 @@ def _write_timeline_figure(manifest: Dict[str, Any], output_png: Path) -> None:
     ax.set_title("Scheduler Timeline")
     ax.grid(axis="x", linestyle="--", alpha=0.3)
 
-    legend_handles = []
+    category_handles = []
     for job_type, color in color_map.items():
-        legend_handles.append(Rectangle((0, 0), 1, 1, facecolor=color, edgecolor="black", linewidth=0.5, label=job_type))
-    ax.legend(
-        handles=legend_handles,
+        category_handles.append(
+            Rectangle((0, 0), 1, 1, facecolor=color, edgecolor="#444444", linewidth=0.7, label=job_type)
+        )
+    category_legend = ax.legend(
+        handles=category_handles,
         loc="upper center",
         bbox_to_anchor=(0.5, -0.18),
-        ncol=max(1, min(len(legend_handles), 3)),
+        ncol=max(1, min(len(category_handles), 3)),
         fontsize=8,
         frameon=False,
+        title="Task category (fill)",
+        title_fontsize=8,
     )
+    ax.add_artist(category_legend)
+
+    participant_handles = []
+    for subject in subject_order:
+        participant_handles.append(
+            Line2D([0], [0], color=subject_edge_map[subject], lw=2.2, label=subject)
+        )
+    if participant_handles:
+        ax.legend(
+            handles=participant_handles,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.30),
+            ncol=max(1, min(len(participant_handles), 4)),
+            fontsize=8,
+            frameon=False,
+            title="Participant (outline)",
+            title_fontsize=8,
+        )
 
     output_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout(rect=(0, 0.08, 1, 1))
+    fig.tight_layout(rect=(0, 0.16, 1, 1))
     fig.savefig(output_png)
     plt.close(fig)
 

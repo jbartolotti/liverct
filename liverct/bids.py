@@ -9,7 +9,7 @@ import logging
 import re
 import subprocess
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -196,16 +196,16 @@ def convert_dicom_directory_to_bids(
     overwrite: bool = False,
 ) -> dict:
     """
-    Convert all CT scans in a directory to BIDS format.
+    Convert all DICOM series in a sourcedata directory to BIDS format.
 
-    Automatically skips subjects that have already been converted to BIDS
-    (i.e., have existing .nii.gz files in bids_root/sub-*/ct/), unless
-    overwrite=True.
+    The expected input layout is ``sub-*/[ses-*/]<series-directory>/``.
+    Series directories are identified by their contents rather than by a
+    required directory name.
 
     Parameters
     ----------
     raw_data_dir : Path
-        Path to directory containing CT scan folders
+        Path to the sourcedata directory containing ``sub-*`` directories
     bids_root : Path
         Path where BIDS dataset will be created
     config_file : Path, optional
@@ -213,10 +213,12 @@ def convert_dicom_directory_to_bids(
     dcm2bids4ct_path : str, optional
         Path to dcm2bids4ct executable (if not in PATH)
     dicom_subdir : str
-        Name of DICOM subdirectory within each CT folder (default: "DICOM")
+        Retained for API compatibility. Series directories are now discovered
+        from their contents and this value is not used.
     overwrite : bool
-        If True, re-convert all subjects even if they already exist in BIDS.
-        If False (default), skip already-converted subjects.
+        If True, re-convert all subject/session inputs even if they already
+        exist in BIDS. If False (default), skip existing subject/session CT
+        outputs.
 
     Returns
     -------
@@ -241,50 +243,94 @@ def convert_dicom_directory_to_bids(
 
     converter = CTBIDSConverter(dcm2bids4ct_path=dcm2bids4ct_path)
 
-    ct_folders = [d for d in Path(raw_data_dir).iterdir() if d.is_dir()]
-    logger.info(f"Found {len(ct_folders)} CT scan folders")
+    subject_folders = [
+        d
+        for d in Path(raw_data_dir).iterdir()
+        if d.is_dir() and d.name.startswith("sub-")
+    ]
+    logger.info(f"Found {len(subject_folders)} subject folders")
 
     results = {"successful": 0, "failed": 0, "skipped": 0}
 
-    for ct_folder in sorted(ct_folders):
-        dicom_dir = ct_folder / dicom_subdir
-
-        if not dicom_dir.exists():
-            logger.warning(f"No {dicom_subdir} folder in {ct_folder.name}, skipping...")
+    for subject_folder in sorted(subject_folders):
+        subject_label = CTBIDSConverter._normalize_subject_label(subject_folder.name)
+        if not subject_label:
+            logger.warning(f"Invalid subject directory name: {subject_folder.name}, skipping...")
             results["skipped"] += 1
             continue
 
-        # Try to derive subject label to check if already converted
-        subject_label = _try_derive_subject_label(dicom_dir)
-        
-        if subject_label and not overwrite:
-            # Check if subject already has BIDS CT files
-            subject_ct_dir = Path(bids_root) / f"sub-{subject_label}" / "ct"
-            if subject_ct_dir.exists():
-                existing_nifti = list(subject_ct_dir.glob("*.nii.gz"))
-                if existing_nifti:
-                    logger.info(
-                        f"Subject sub-{subject_label} already converted "
-                        f"({len(existing_nifti)} NIfTI file(s) found), skipping..."
-                    )
-                    results["skipped"] += 1
-                    continue
-
-        logger.info(f"Converting: {ct_folder.name} (subject: auto)")
-
-        success = converter.convert(
-            dicom_dir=str(dicom_dir),
-            bids_root=str(bids_root),
-            subject_id=None,
-            config_file=str(config_file) if config_file else None,
+        session_folders = sorted(
+            d
+            for d in subject_folder.iterdir()
+            if d.is_dir() and d.name.startswith("ses-")
         )
 
-        if success:
-            results["successful"] += 1
-            logger.info(f"✓ Successfully converted {ct_folder.name}")
+        if session_folders:
+            conversion_groups = [
+                (session_folder.name, session_folder)
+                for session_folder in session_folders
+            ]
         else:
-            results["failed"] += 1
-            logger.error(f"✗ Failed to convert {ct_folder.name}")
+            conversion_groups = [(None, subject_folder)]
+
+        for session_id, parent_folder in conversion_groups:
+            series_folders = _find_dicom_series_directories(parent_folder)
+            if not series_folders:
+                if session_id is None:
+                    logger.warning(
+                        f"No readable DICOM series found in {subject_folder.name}, skipping..."
+                    )
+                else:
+                    logger.warning(
+                        f"No readable DICOM series found in {parent_folder.name}, skipping..."
+                    )
+                results["skipped"] += 1
+                continue
+
+            session_label = session_id.replace("ses-", "") if session_id else None
+            if session_label:
+                output_dir = (
+                    Path(bids_root)
+                    / f"sub-{subject_label}"
+                    / f"ses-{session_label}"
+                    / "ct"
+                )
+            else:
+                output_dir = Path(bids_root) / f"sub-{subject_label}" / "ct"
+
+            if not overwrite:
+                existing_nifti = list(output_dir.glob("*.nii.gz"))
+                if existing_nifti:
+                    entity = f"sub-{subject_label}"
+                    if session_label:
+                        entity += f"/ses-{session_label}"
+                    logger.info(
+                        f"{entity} already converted "
+                        f"({len(existing_nifti)} NIfTI file(s) found), skipping..."
+                    )
+                    results["skipped"] += len(series_folders)
+                    continue
+
+            for series_folder in series_folders:
+                entity = f"{subject_folder.name}"
+                if session_id:
+                    entity += f"/{session_id}"
+                logger.info(f"Converting: {entity}/{series_folder.name}")
+
+                success = converter.convert(
+                    dicom_dir=str(series_folder),
+                    bids_root=str(bids_root),
+                    subject_id=subject_label,
+                    session_id=session_label,
+                    config_file=str(config_file) if config_file else None,
+                )
+
+                if success:
+                    results["successful"] += 1
+                    logger.info(f"Successfully converted {series_folder.name}")
+                else:
+                    results["failed"] += 1
+                    logger.error(f"Failed to convert {series_folder.name}")
 
     logger.info(f"\n{'='*60}")
     logger.info(
@@ -295,6 +341,36 @@ def convert_dicom_directory_to_bids(
     logger.info(f"{'='*60}")
 
     return results
+
+
+def _find_dicom_series_directories(parent_dir: Path) -> List[Path]:
+    """Find immediate child directories containing at least one readable DICOM."""
+    return sorted(
+        child
+        for child in parent_dir.iterdir()
+        if child.is_dir()
+        and not child.name.startswith("ses-")
+        and _contains_readable_dicom(child)
+    )
+
+
+def _contains_readable_dicom(directory: Path) -> bool:
+    """Return whether a directory contains at least one readable DICOM file."""
+    try:
+        import pydicom
+    except Exception:
+        logger.error("pydicom is required to discover DICOM series directories.")
+        return False
+
+    for file_path in directory.rglob("*"):
+        if not file_path.is_file():
+            continue
+        try:
+            pydicom.dcmread(str(file_path), stop_before_pixels=True)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def _try_derive_subject_label(dicom_path: Path) -> Optional[str]:

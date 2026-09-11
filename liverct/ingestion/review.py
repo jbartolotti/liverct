@@ -2,8 +2,11 @@
 
 from datetime import datetime, timezone
 from html import escape
+import logging
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def generate_review_reports(scored_inventory: Path, output_dir: Path, config=None) -> Path:
@@ -18,21 +21,32 @@ def generate_review_reports(scored_inventory: Path, output_dir: Path, config=Non
     assets = output_dir / "review_assets"
     assets.mkdir(exist_ok=True)
     frame = pd.read_csv(scored_inventory, sep="\t", dtype=str).fillna("")
+    logger.info("Loading scored inventory for review: %s (%d rows)", scored_inventory, len(frame))
     decision_path = output_dir / "review.tsv"
     if not decision_path.exists():
         pd.DataFrame(columns=["series_key", "series_instance_uid", "decision", "reviewer", "review_timestamp", "comment"]).to_csv(decision_path, sep="\t", index=False)
+        logger.info("Created review decision template: %s", decision_path)
+    else:
+        logger.info("Preserving existing review decisions: %s", decision_path)
 
     for tier in ("Tier 2", "Tier 3"):
         rows = frame[frame["tier"] == tier]
+        logger.info("Generating %s report: %d series", tier, len(rows))
         html_rows = []
+        thumbnail_count = 0
         for _, row in rows.iterrows():
             key = _series_key(row)
             thumbnail = _make_thumbnail(row, assets, config)
+            if thumbnail:
+                thumbnail_count += 1
             image_html = "<img src='{}' alt='Representative slice' width='240'>".format(escape(thumbnail)) if thumbnail else "<p>No thumbnail available</p>"
             html_rows.append("<article><h2>{}</h2>{}<dl>{}</dl></article>".format(
                 escape(key), image_html, "".join("<dt>{}</dt><dd>{}</dd>".format(escape(str(k)), escape(str(row.get(k, "")))) for k in ("study_description", "series_description", "modality", "num_slices", "z_extent_mm", "source_directory", "tier_reason"))))
         report = "<!doctype html><meta charset='utf-8'><title>{}</title><h1>{}</h1>{}".format(tier, tier, "\n".join(html_rows) or "<p>No series in this tier.</p>")
-        (output_dir / ("review_tier2.html" if tier == "Tier 2" else "review_tier3.html")).write_text(report, encoding="utf-8")
+        report_path = output_dir / ("review_tier2.html" if tier == "Tier 2" else "review_tier3.html")
+        report_path.write_text(report, encoding="utf-8")
+        logger.info("Wrote %s: %d rows, %d montages", report_path, len(rows), thumbnail_count)
+    logger.info("Review report generation complete: decision file=%s", decision_path)
     return decision_path
 
 

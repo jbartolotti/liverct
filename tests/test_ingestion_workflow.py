@@ -36,11 +36,23 @@ def _write_dicom(path, series_uid, instance_number, study_date="20200722"):
     dataset.save_as(path)
 
 
-def test_inventory_and_staging_filter_series_uid(tmp_path):
-    archive = tmp_path / "0119838" / "GRANULAR" / "CT" / "20200722"
+def _create_archive_subject(archive, series_uid="series1"):
     archive.mkdir(parents=True)
     for index in range(1, 4):
-        _write_dicom(archive / "image{}.dcm".format(index), "series1", index)
+        _write_dicom(archive / "image{}.dcm".format(index), series_uid, index)
+
+
+def test_inventory_test_mode_limits_top_level_search(tmp_path):
+    _create_archive_subject(tmp_path / "0119838" / "GRANULAR" / "CT" / "20200722")
+    _create_archive_subject(tmp_path / "0999999" / "GRANULAR" / "CT" / "20200722", "series2")
+
+    inventory = inventory_archive(tmp_path, test_mode=True)
+    assert set(inventory["subject_folder"]) == {"0119838"}
+
+
+def test_inventory_and_staging_filter_series_uid(tmp_path):
+    archive = tmp_path / "0119838" / "GRANULAR" / "CT" / "20200722"
+    _create_archive_subject(archive)
     _write_dicom(archive / "other.dcm", "series2", 1)
 
     inventory = inventory_archive(tmp_path)

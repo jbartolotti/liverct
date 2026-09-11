@@ -1,8 +1,11 @@
 """YAML configuration for the CT archive ingestion workflow."""
 
 from dataclasses import dataclass, field
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -53,6 +56,7 @@ def load_config(path: Optional[Path] = None) -> IngestionConfig:
     """Load a YAML configuration, applying defaults to omitted sections."""
     values = _copy_defaults()
     if path is None:
+        logger.info("Using default ingestion configuration (version=%s)", values.get("config_version", "1"))
         return IngestionConfig(values=values)
 
     try:
@@ -74,4 +78,5 @@ def load_config(path: Optional[Path] = None) -> IngestionConfig:
         else:
             values[section] = section_values
     values["config_version"] = loaded.get("config_version", "1")
+    logger.info("Loaded ingestion configuration: path=%s version=%s", config_path, values["config_version"])
     return IngestionConfig(values=values, path=config_path)

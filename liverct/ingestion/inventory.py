@@ -1,12 +1,23 @@
 """Archive-agnostic DICOM series inventory."""
 
 from collections import defaultdict
+import logging
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
-def inventory_archive(root_dir: Path, output_path: Optional[Path] = None):
-    """Discover readable DICOM series recursively and return one row per series."""
+def inventory_archive(
+    root_dir: Path,
+    output_path: Optional[Path] = None,
+    test_mode: bool = False,
+):
+    """Discover readable DICOM series recursively and return one row per series.
+
+    When ``test_mode`` is true, only the first top-level directory below the
+    archive root is searched. This is intended for a quick archive smoke test.
+    """
     import pandas as pd
     import pydicom
 
@@ -14,32 +25,71 @@ def inventory_archive(root_dir: Path, output_path: Optional[Path] = None):
     if not root.is_dir():
         raise FileNotFoundError("Archive directory not found: {}".format(root))
 
+    top_level_dirs = sorted(path for path in root.iterdir() if path.is_dir())
+    if test_mode and top_level_dirs:
+        search_roots = [top_level_dirs[0]]
+        logger.warning(
+            "TEST MODE: scanning only top-level directory %s; %d top-level directories remain unscanned",
+            search_roots[0].name,
+            max(0, len(top_level_dirs) - 1),
+        )
+    else:
+        search_roots = top_level_dirs or [root]
+        logger.info(
+            "Inventory search root: %s (%d top-level directories)",
+            root,
+            len(top_level_dirs),
+        )
+
     grouped: Dict[str, Dict[str, Any]] = {}
     positions: Dict[str, List[float]] = defaultdict(list)
     instances: Dict[str, List[int]] = defaultdict(list)
     source_dirs: Dict[str, set] = defaultdict(set)
 
-    for file_path in sorted(path for path in root.rglob("*") if path.is_file()):
-        try:
-            dataset = pydicom.dcmread(str(file_path), stop_before_pixels=True, force=True)
-        except Exception:
-            continue
-        series_uid = _text(dataset, "SeriesInstanceUID")
-        if not series_uid:
-            continue
-        study_uid = _text(dataset, "StudyInstanceUID")
-        subject_folder = _subject_folder(root, file_path)
-        key = "|".join((subject_folder, study_uid, series_uid))
-        if key not in grouped:
-            grouped[key] = _series_metadata(dataset, root, file_path, subject_folder, study_uid, series_uid)
-        source_dirs[key].add(str(file_path.parent))
-        grouped[key]["num_files"] += 1
-        instance = _number(dataset, "InstanceNumber")
-        if instance is not None:
-            instances[key].append(instance)
-        position = _image_z(dataset)
-        if position is not None:
-            positions[key].append(position)
+    file_count = 0
+    readable_count = 0
+    unreadable_count = 0
+    missing_uid_count = 0
+    logged_subjects = set()
+    for search_root in search_roots:
+        logger.info("Scanning archive directory: %s", search_root)
+        search_files = sorted(path for path in search_root.rglob("*") if path.is_file())
+        logger.info("Found %d files below %s", len(search_files), search_root.name)
+        for file_path in search_files:
+            file_count += 1
+            subject_folder = _subject_folder(root, file_path)
+            if subject_folder not in logged_subjects:
+                logger.info("Processing subject/top-level folder: %s", subject_folder)
+                logged_subjects.add(subject_folder)
+            try:
+                dataset = pydicom.dcmread(str(file_path), stop_before_pixels=True, force=True)
+            except Exception:
+                unreadable_count += 1
+                continue
+            readable_count += 1
+            series_uid = _text(dataset, "SeriesInstanceUID")
+            if not series_uid:
+                missing_uid_count += 1
+                continue
+            study_uid = _text(dataset, "StudyInstanceUID")
+            key = "|".join((subject_folder, study_uid, series_uid))
+            if key not in grouped:
+                grouped[key] = _series_metadata(dataset, root, file_path, subject_folder, study_uid, series_uid)
+                logger.info(
+                    "Discovered series: subject=%s study=%s series=%s description=%s",
+                    subject_folder,
+                    study_uid or "<missing>",
+                    series_uid,
+                    _text(dataset, "SeriesDescription") or "<missing>",
+                )
+            source_dirs[key].add(str(file_path.parent))
+            grouped[key]["num_files"] += 1
+            instance = _number(dataset, "InstanceNumber")
+            if instance is not None:
+                instances[key].append(instance)
+            position = _image_z(dataset)
+            if position is not None:
+                positions[key].append(position)
 
     rows = []
     for key, row in grouped.items():
@@ -57,6 +107,16 @@ def inventory_archive(root_dir: Path, output_path: Optional[Path] = None):
     if output_path is not None:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         frame.to_csv(output_path, sep="\t", index=False)
+        logger.info("Wrote inventory: %s", output_path)
+    logger.info(
+        "Inventory complete: files=%d readable_dicom=%d unreadable=%d missing_series_uid=%d subjects=%d series=%d",
+        file_count,
+        readable_count,
+        unreadable_count,
+        missing_uid_count,
+        len(logged_subjects),
+        len(frame),
+    )
     return frame.reset_index(drop=True)
 
 

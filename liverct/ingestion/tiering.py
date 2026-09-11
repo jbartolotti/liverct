@@ -1,7 +1,10 @@
 """Configurable, explainable CT series tiering."""
 
+import logging
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def score_inventory(input_path: Path, output_path: Optional[Path] = None, config=None):
@@ -12,11 +15,18 @@ def score_inventory(input_path: Path, output_path: Optional[Path] = None, config
         from .config import IngestionConfig
         config = IngestionConfig()
     frame = pd.read_csv(input_path, sep="\t", dtype=str).fillna("")
+    logger.info("Loading inventory for scoring: %s (%d rows)", input_path, len(frame))
     rules = config.tiering
     abdomen_terms = [str(term).upper() for term in rules.get("abdomen_terms", [])]
     reject_terms = [str(term).upper() for term in rules.get("reject_terms", [])]
     abdomen_pattern = "|".join(abdomen_terms)
     reject_pattern = "|".join(reject_terms)
+    logger.info(
+        "Scoring rules: required_modality=%s min_z_extent_mm=%s min_num_slices=%s",
+        rules.get("required_modality", "CT"),
+        rules.get("min_z_extent_mm", 200.0),
+        rules.get("min_num_slices", 50),
+    )
 
     modality = frame.get("modality", "").str.upper()
     image_type = frame.get("image_type", "").str.upper()
@@ -52,8 +62,15 @@ def score_inventory(input_path: Path, output_path: Optional[Path] = None, config
     frame["tier"] = tiers
     frame["tier_reason"] = reasons
     frame["rule_version"] = str(config.values.get("config_version", "1"))
+    tier_counts = frame["tier"].value_counts().to_dict()
+    logger.info(
+        "Scoring complete: Tier 1=%d Tier 2=%d Tier 3=%d Tier 4=%d",
+        tier_counts.get("Tier 1", 0), tier_counts.get("Tier 2", 0),
+        tier_counts.get("Tier 3", 0), tier_counts.get("Tier 4", 0),
+    )
 
     if output_path is not None:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         frame.to_csv(output_path, sep="\t", index=False)
+        logger.info("Wrote scored inventory: %s", output_path)
     return frame

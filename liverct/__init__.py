@@ -26,6 +26,15 @@ from .figures import (
 	create_liver_segments_montage,
 	generate_montages_from_bids,
 )
+from .ingestion import (
+	IngestionConfig,
+	load_config,
+	inventory_archive,
+	score_inventory,
+	generate_review_reports,
+	build_manifest,
+	stage_sourcedata,
+)
 
 __version__ = "0.1.0"
 __author__ = "jbartolotti"
@@ -53,5 +62,12 @@ __all__ = [
 	"create_organ_montages",
 	"create_liver_segments_montage",
 	"generate_montages_from_bids",
+	"IngestionConfig",
+	"load_config",
+	"inventory_archive",
+	"score_inventory",
+	"generate_review_reports",
+	"build_manifest",
+	"stage_sourcedata",
 ]
 

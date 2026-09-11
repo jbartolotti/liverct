@@ -25,6 +25,12 @@ classifiers = [
 bids = [
     "dcm2bids4ct @ git+https://github.com/ChristianHinge/dcm2bids4ct.git",
 ]
+ingestion = [
+    "pydicom>=2.3",
+    "pandas>=1.4",
+    "PyYAML>=6.0",
+    "Pillow>=9.0",
+]
 viz = [
     "matplotlib>=3.5",
 ]

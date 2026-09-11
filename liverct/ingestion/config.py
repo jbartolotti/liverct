@@ -1,0 +1,77 @@
+"""YAML configuration for the CT archive ingestion workflow."""
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+
+DEFAULT_CONFIG: Dict[str, Any] = {
+    "archive": {"session_from": "study_date"},
+    "tiering": {
+        "min_z_extent_mm": 200.0,
+        "min_num_slices": 50,
+        "abdomen_terms": ["ABD", "ABDOMEN", "ABD/PEL", "A/P", "PELV", "PELVIS", "TORSO", "CAP"],
+        "reject_terms": ["SCOUT", "LOCALIZER", "DOSE", "SAGITTAL", "CORONAL", "REFORMAT", "PROTOCOL"],
+        "required_modality": "CT",
+    },
+    "review": {"thumbnail_count": 6, "window_min": -200, "window_max": 300},
+    "staging": {"mode": "copy"},
+}
+
+
+@dataclass
+class IngestionConfig:
+    """Normalized ingestion settings loaded from YAML."""
+
+    values: Dict[str, Any] = field(default_factory=lambda: _copy_defaults())
+    path: Optional[Path] = None
+
+    @property
+    def archive(self) -> Dict[str, Any]:
+        return self.values["archive"]
+
+    @property
+    def tiering(self) -> Dict[str, Any]:
+        return self.values["tiering"]
+
+    @property
+    def review(self) -> Dict[str, Any]:
+        return self.values["review"]
+
+    @property
+    def staging(self) -> Dict[str, Any]:
+        return self.values["staging"]
+
+
+def _copy_defaults() -> Dict[str, Any]:
+    import copy
+
+    return copy.deepcopy(DEFAULT_CONFIG)
+
+
+def load_config(path: Optional[Path] = None) -> IngestionConfig:
+    """Load a YAML configuration, applying defaults to omitted sections."""
+    values = _copy_defaults()
+    if path is None:
+        return IngestionConfig(values=values)
+
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ImportError("YAML ingestion configuration requires PyYAML") from exc
+
+    config_path = Path(path)
+    with config_path.open("r", encoding="utf-8") as handle:
+        loaded = yaml.safe_load(handle) or {}
+    if not isinstance(loaded, dict):
+        raise ValueError("Ingestion configuration must contain a YAML mapping")
+
+    for section, section_values in loaded.items():
+        if section not in values:
+            values[section] = section_values
+        elif isinstance(section_values, dict):
+            values[section].update(section_values)
+        else:
+            values[section] = section_values
+    values["config_version"] = loaded.get("config_version", "1")
+    return IngestionConfig(values=values, path=config_path)

@@ -123,7 +123,7 @@ def inventory_archive(
 def _series_metadata(dataset, root: Path, file_path: Path, subject_folder: str, study_uid: str, series_uid: str) -> Dict[str, Any]:
     if dataset is None:
         return {name: "" for name in [
-            "subject_folder", "patient_id", "patient_name", "study_instance_uid", "series_instance_uid",
+            "subject_folder", "patient_id", "study_instance_uid", "series_instance_uid",
             "study_date", "study_description", "series_number", "series_description", "modality",
             "sop_class_uid", "sop_class_name", "image_type", "body_part_examined", "acquisition_date",
             "acquisition_time", "manufacturer", "manufacturer_model_name", "slice_thickness",
@@ -138,7 +138,6 @@ def _series_metadata(dataset, root: Path, file_path: Path, subject_folder: str, 
     return {
         "subject_folder": subject_folder,
         "patient_id": _text(dataset, "PatientID"),
-        "patient_name": _text(dataset, "PatientName"),
         "study_instance_uid": study_uid,
         "series_instance_uid": series_uid,
         "study_date": _text(dataset, "StudyDate"),

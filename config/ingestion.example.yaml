@@ -29,6 +29,7 @@ review:
   thumbnail_count: 6
   window_min: -200
   window_max: 300
+  max_montage_width: 4096
 
 staging:
   mode: copy

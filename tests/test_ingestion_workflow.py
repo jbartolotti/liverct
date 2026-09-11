@@ -1,7 +1,10 @@
 import pandas as pd
 import pytest
+import numpy as np
+from pydicom import Dataset
 
 from liverct.ingestion import build_manifest, inventory_archive, load_config, score_inventory, stage_sourcedata
+from liverct.ingestion.review import _display_pixels, _make_thumbnail, generate_review_reports
 
 
 def _write_dicom(path, series_uid, instance_number, study_date="20200722"):
@@ -83,12 +86,15 @@ def test_scoring_assigns_four_tiers(tmp_path):
         {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "s2", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY", "series_description": "ABD", "study_description": "", "z_extent_mm": "250", "num_slices": "100"},
         {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "s3", "modality": "CT", "image_type": "LOCALIZER", "series_description": "SCOUT", "study_description": "", "z_extent_mm": "", "num_slices": "1"},
         {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "s4", "modality": "MR", "image_type": "ORIGINAL", "series_description": "ABD", "study_description": "", "z_extent_mm": "250", "num_slices": "100"},
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "s5", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "series_description": "ABD", "study_description": "ABDOMEN", "z_extent_mm": "250", "num_slices": "2"},
     ])
     source = tmp_path / "inventory.tsv"
     output = tmp_path / "scored.tsv"
     inventory.to_csv(source, sep="\t", index=False)
     scored = score_inventory(source, output)
-    assert list(scored["tier"]) == ["Tier 1", "Tier 2", "Tier 4", "Tier 4"]
+    assert list(scored["tier"]) == ["Tier 1", "Tier 2", "Tier 4", "Tier 4", "Tier 4"]
+    assert scored.loc[scored["series_instance_uid"] == "s5", "reject_short_series"].iloc[0] == 1
+    assert scored.loc[scored["series_instance_uid"] == "s5", "tier_reason"].iloc[0] == "series contains only 1 or 2 slices"
 
 
 def test_manifest_requires_ambiguous_review(tmp_path):
@@ -105,3 +111,101 @@ def test_manifest_requires_ambiguous_review(tmp_path):
     pd.DataFrame(columns=["series_key", "decision"]).to_csv(review, sep="\t", index=False)
     with pytest.raises(ValueError, match="Missing review decision"):
         build_manifest(scored, review, output)
+
+
+def _pixel_dataset(values, slope=None, intercept=None, center=None, width=None):
+    dataset = Dataset()
+    from pydicom.dataset import FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian
+
+    dataset.file_meta = FileMetaDataset()
+    dataset.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    dataset.is_little_endian = True
+    dataset.is_implicit_VR = False
+    pixels = np.asarray(values, dtype=np.int16)
+    dataset.Rows, dataset.Columns = pixels.shape
+    dataset.BitsAllocated = 16
+    dataset.BitsStored = 16
+    dataset.HighBit = 15
+    dataset.PixelRepresentation = 1
+    dataset.SamplesPerPixel = 1
+    dataset.PhotometricInterpretation = "MONOCHROME2"
+    dataset.PixelData = pixels.tobytes()
+    if slope is not None:
+        dataset.RescaleSlope = slope
+    if intercept is not None:
+        dataset.RescaleIntercept = intercept
+    if center is not None:
+        dataset.WindowCenter = center
+    if width is not None:
+        dataset.WindowWidth = width
+    return dataset
+
+
+def test_review_scaling_converts_hu_and_applies_dicom_window():
+    dataset = _pixel_dataset([[0, 1000, 2000]], slope=2, intercept=-1000, center=1000, width=2000)
+    display = _display_pixels(dataset)
+    assert display.tolist() == [[0, 127, 255]]
+
+
+def test_review_scaling_uses_percentiles_without_window():
+    dataset = _pixel_dataset([list(range(100)) + [10000]])
+    display = _display_pixels(dataset)
+    assert display.dtype == np.uint8
+    assert display[0, 0] == 0
+    assert display[0, -1] == 255
+    assert display[0, 10] < display[0, 50] < display[0, 90]
+
+
+def test_review_montage_uses_fixed_height_and_variable_width(tmp_path):
+    archive = tmp_path / "series"
+    archive.mkdir()
+    for index in range(1, 4):
+        _write_dicom(archive / "image{}.dcm".format(index), "series1", index)
+    row = {
+        "source_directory": str(archive),
+        "series_instance_uid": "series1",
+    }
+    from liverct.ingestion.config import IngestionConfig
+    thumbnail = _make_thumbnail(row, tmp_path / "assets", IngestionConfig())
+    from PIL import Image
+    image = Image.open(tmp_path / "assets" / "series1.png")
+    assert thumbnail == "review_assets/series1.png"
+    assert image.height == 260
+    assert image.width == 3 * 240
+
+
+def test_review_template_prepopulates_candidates_and_preserves_decisions(tmp_path):
+    scored = pd.DataFrame([
+        {
+            "subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "s1",
+            "study_date": "20200722", "study_description": "ABDOMEN", "series_number": "2",
+            "series_description": "ABD", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY",
+            "num_slices": "100", "z_extent_mm": "250", "source_directory": str(tmp_path),
+            "tier": "Tier 2", "tier_reason": "requires review",
+        },
+        {
+            "subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "s2",
+            "study_date": "20200722", "study_description": "ABDOMEN", "series_number": "3",
+            "series_description": "SCOUT", "modality": "CT", "image_type": "LOCALIZER",
+            "num_slices": "1", "z_extent_mm": "", "source_directory": str(tmp_path),
+            "tier": "Tier 4", "tier_reason": "series contains only 1 or 2 slices",
+        },
+    ])
+    scored_path = tmp_path / "scored.tsv"
+    output_dir = tmp_path / "review"
+    scored.to_csv(scored_path, sep="\t", index=False)
+
+    review_path = generate_review_reports(scored_path, output_dir)
+    review = pd.read_csv(review_path, sep="\t", dtype=str).fillna("")
+    assert list(review["series_instance_uid"]) == ["s1"]
+    assert review.loc[0, "series_key"] == "011|study1|s1"
+    assert review.loc[0, "decision"] == ""
+
+    review.loc[0, "decision"] = "accept"
+    review.loc[0, "reviewer"] = "reviewer1"
+    review.to_csv(review_path, sep="\t", index=False)
+    generate_review_reports(scored_path, output_dir)
+    rerun = pd.read_csv(review_path, sep="\t", dtype=str).fillna("")
+    assert rerun.loc[0, "decision"] == "accept"
+    assert rerun.loc[0, "reviewer"] == "reviewer1"

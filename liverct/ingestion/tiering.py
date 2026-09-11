@@ -44,12 +44,15 @@ def score_inventory(input_path: Path, output_path: Optional[Path] = None, config
     frame["reject_description"] = text.str.contains(reject_pattern, regex=True, na=False).astype(int) if reject_pattern else 0
     frame["pass_z_extent"] = (z_extent >= float(rules.get("min_z_extent_mm", 200.0))).fillna(False).astype(int)
     frame["pass_num_slices"] = (num_slices >= int(rules.get("min_num_slices", 50))).fillna(False).astype(int)
+    frame["reject_short_series"] = num_slices.isin([1, 2]).astype(int)
 
     tiers = []
     reasons = []
     for row in frame.itertuples(index=False):
         values = row._asdict()
-        if values["pass_modality"] == 0 or values["reject_description"] == 1:
+        if values["reject_short_series"] == 1:
+            tier, reason = "Tier 4", "series contains only 1 or 2 slices"
+        elif values["pass_modality"] == 0 or values["reject_description"] == 1:
             tier, reason = "Tier 4", "non-CT modality or explicit reject description"
         elif all(values[name] == 1 for name in ("pass_original", "pass_primary", "pass_axial", "pass_torso_description", "pass_z_extent", "pass_num_slices")):
             tier, reason = "Tier 1", "original primary axial torso series with sufficient coverage"

@@ -97,6 +97,38 @@ def test_scoring_assigns_four_tiers(tmp_path):
     assert scored.loc[scored["series_instance_uid"] == "s5", "tier_reason"].iloc[0] == "series contains only 1 or 2 slices"
 
 
+def test_scoring_recommends_one_primary_per_study(tmp_path):
+    inventory = pd.DataFrame([
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "s1", "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "series_description": "ABD", "study_description": "ABDOMEN", "z_extent_mm": "250", "num_slices": "100"},
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "s2", "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY", "series_description": "VENOUS", "study_description": "ABDOMEN", "z_extent_mm": "250", "num_slices": "100"},
+        {"subject_folder": "011", "study_instance_uid": "study2", "series_instance_uid": "s3", "study_date": "20210830", "modality": "CT", "image_type": "LOCALIZER", "series_description": "SCOUT", "study_description": "ABDOMEN", "z_extent_mm": "", "num_slices": "1"},
+    ])
+    source = tmp_path / "inventory.tsv"
+    inventory.to_csv(source, sep="\t", index=False)
+    scored = score_inventory(source)
+    assert list(scored["recommendation"]) == ["PRIMARY", "SECONDARY", "REJECT"]
+    assert scored.loc[0, "study_group_key"] == "011|study1"
+
+
+def test_manifest_includes_secondary_only_when_requested(tmp_path):
+    inventory = pd.DataFrame([
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "s1", "study_date": "20200722", "series_number": "2", "series_description": "ABD", "study_description": "ABDOMEN", "source_directory": str(tmp_path), "representative_file": "x1", "tier": "Tier 1", "tier_reason": "primary", "recommendation": "PRIMARY", "study_group_key": "011|study1", "rule_version": "1"},
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "s2", "study_date": "20200722", "series_number": "3", "series_description": "VENOUS", "study_description": "ABDOMEN", "source_directory": str(tmp_path), "representative_file": "x2", "tier": "Tier 2", "tier_reason": "secondary", "recommendation": "SECONDARY", "study_group_key": "011|study1", "rule_version": "1"},
+    ])
+    scored = tmp_path / "scored.tsv"
+    review = tmp_path / "review.tsv"
+    inventory.to_csv(scored, sep="\t", index=False)
+    pd.DataFrame([
+        {"series_key": "011|study1|s1", "reviewer_decision": "PRIMARY"},
+        {"series_key": "011|study1|s2", "reviewer_decision": "SECONDARY"},
+    ]).to_csv(review, sep="\t", index=False)
+
+    primary_only = build_manifest(scored, review, tmp_path / "primary.tsv")
+    with_secondary = build_manifest(scored, review, tmp_path / "all.tsv", include_secondary=True)
+    assert list(primary_only["series_uid"]) == ["s1"]
+    assert list(with_secondary["series_uid"]) == ["s1", "s2"]
+
+
 def test_manifest_requires_ambiguous_review(tmp_path):
     inventory = pd.DataFrame([{
         "subject_folder": "sub-011", "study_instance_uid": "study1", "series_instance_uid": "s1",
@@ -198,14 +230,15 @@ def test_review_template_prepopulates_candidates_and_preserves_decisions(tmp_pat
 
     review_path = generate_review_reports(scored_path, output_dir)
     review = pd.read_csv(review_path, sep="\t", dtype=str).fillna("")
-    assert list(review["series_instance_uid"]) == ["s1"]
+    assert list(review["series_instance_uid"]) == ["s1", "s2"]
     assert review.loc[0, "series_key"] == "011|study1|s1"
-    assert review.loc[0, "decision"] == ""
+    assert review.loc[0, "reviewer_decision"] == "PRIMARY"
+    assert review.loc[1, "recommendation"] == "REJECT"
 
-    review.loc[0, "decision"] = "accept"
-    review.loc[0, "reviewer"] = "reviewer1"
+    review.loc[0, "reviewer_decision"] = "SECONDARY"
+    review.loc[0, "notes"] = "reviewer1"
     review.to_csv(review_path, sep="\t", index=False)
     generate_review_reports(scored_path, output_dir)
     rerun = pd.read_csv(review_path, sep="\t", dtype=str).fillna("")
-    assert rerun.loc[0, "decision"] == "accept"
-    assert rerun.loc[0, "reviewer"] == "reviewer1"
+    assert rerun.loc[0, "reviewer_decision"] == "SECONDARY"
+    assert rerun.loc[0, "notes"] == "reviewer1"

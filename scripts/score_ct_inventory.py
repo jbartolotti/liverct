@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Score an inventory into four review tiers."""
+"""Score an inventory into legacy tiers and study-level recommendations."""
 import argparse
 import logging
 from pathlib import Path

@@ -17,7 +17,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "reject_terms": ["SCOUT", "LOCALIZER", "DOSE", "SAGITTAL", "CORONAL", "REFORMAT", "PROTOCOL"],
         "required_modality": "CT",
     },
-    "review": {"thumbnail_count": 6, "window_min": -200, "window_max": 300, "max_montage_width": 4096},
+    "review": {"thumbnail_count": 6, "window_min": -200, "window_max": 300, "max_montage_width": 4096, "detailed_review": False},
     "staging": {"mode": "copy"},
 }
 

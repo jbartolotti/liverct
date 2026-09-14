@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate image-based HTML review reports."""
+"""Generate subject-specific study-level HTML review reports."""
 import argparse
 import logging
 from pathlib import Path

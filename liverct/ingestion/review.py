@@ -1,16 +1,17 @@
-"""Static image-based review reports for ambiguous series."""
+"""Study-centric image-based review reports."""
 
 from datetime import datetime, timezone
 from html import escape
 import logging
 from pathlib import Path
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
 def generate_review_reports(scored_inventory: Path, output_dir: Path, config=None) -> Path:
-    """Generate Tier 2/Tier 3 HTML reports and preserve review.tsv."""
+    """Generate one hierarchical HTML report per subject and preserve review.tsv."""
     import pandas as pd
 
     if config is None:
@@ -21,67 +22,116 @@ def generate_review_reports(scored_inventory: Path, output_dir: Path, config=Non
     assets = output_dir / "review_assets"
     assets.mkdir(exist_ok=True)
     frame = pd.read_csv(scored_inventory, sep="\t", dtype=str).fillna("")
+    frame = _ensure_review_columns(frame)
     logger.info("Loading scored inventory for review: %s (%d rows)", scored_inventory, len(frame))
     decision_path = output_dir / "review.tsv"
     _write_review_template(frame, decision_path)
-
-    for tier in ("Tier 2", "Tier 3"):
-        rows = frame[frame["tier"] == tier]
-        logger.info("Generating %s report: %d series", tier, len(rows))
-        html_rows = []
+    detailed_review = bool(config.review.get("detailed_review", False))
+    subjects = frame.groupby("subject_folder", sort=True, dropna=False)
+    for subject, subject_rows in subjects:
+        study_sections = []
         thumbnail_count = 0
-        for _, row in rows.iterrows():
-            key = _series_key(row)
-            thumbnail = _make_thumbnail(row, assets, config)
-            if thumbnail:
-                thumbnail_count += 1
-            image_html = "<img src='{}' alt='Representative slice' height='260'>".format(escape(thumbnail)) if thumbnail else "<p>No thumbnail available</p>"
-            html_rows.append("<article><h2>{}</h2>{}<dl>{}</dl></article>".format(
-                escape(key), image_html, "".join("<dt>{}</dt><dd>{}</dd>".format(escape(str(k)), escape(str(row.get(k, "")))) for k in ("study_description", "series_description", "modality", "num_slices", "z_extent_mm", "source_directory", "tier_reason"))))
-        report = "<!doctype html><meta charset='utf-8'><title>{}</title><h1>{}</h1>{}".format(tier, tier, "\n".join(html_rows) or "<p>No series in this tier.</p>")
-        report_path = output_dir / ("review_tier2.html" if tier == "Tier 2" else "review_tier3.html")
+        for study_key, study_rows in subject_rows.groupby("study_group_key", sort=True, dropna=False):
+            first = study_rows.iloc[0]
+            series_rows = []
+            for _, row in study_rows.iterrows():
+                recommendation = row.get("recommendation", "REJECT")
+                should_render = detailed_review or recommendation in ("PRIMARY", "SECONDARY")
+                thumbnail = _make_thumbnail(row, assets, config) if should_render else ""
+                if thumbnail:
+                    thumbnail_count += 1
+                image_html = "<img src='{}' alt='Representative slice' height='260'>".format(escape(thumbnail)) if thumbnail else ""
+                series_rows.append("<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+                    escape(recommendation), escape(str(row.get("series_number", ""))),
+                    escape(str(row.get("series_description", ""))), escape(str(row.get("image_type", ""))),
+                    escape(str(row.get("num_slices", ""))), escape(str(row.get("z_extent_mm", ""))),
+                    escape(str(row.get("slice_thickness", ""))), image_html))
+            study_sections.append("<section><h2>Study Date: {}</h2><p><strong>Study Description:</strong> {}</p><p><strong>Study Instance UID:</strong> {}</p><table><thead><tr><th>Recommendation</th><th>Series #</th><th>Description</th><th>Image Type</th><th>Num Slices</th><th>Z Extent (mm)</th><th>Slice Thickness</th><th>Montage</th></tr></thead><tbody>{}</tbody></table></section>".format(
+                escape(str(first.get("study_date", ""))), escape(str(first.get("study_description", ""))),
+                escape(str(first.get("study_instance_uid", study_key))), "".join(series_rows)))
+        patient_ids = sorted(set(str(value) for value in subject_rows.get("patient_id", [] ) if value))
+        report = "<!doctype html><meta charset='utf-8'><title>Subject {0}</title><h1>Subject {0}</h1><dl><dt>Patient ID</dt><dd>{1}</dd><dt>Total Studies</dt><dd>{2}</dd><dt>Study Dates</dt><dd>{3}</dd></dl>{4}".format(
+            escape(str(subject)), escape(", ".join(patient_ids)), len(study_sections),
+            escape(", ".join(sorted(set(str(value) for value in subject_rows["study_date"] if value)))),
+            "\n".join(study_sections) or "<p>No studies.</p>")
+        report_subject = str(subject) if str(subject).startswith("sub-") else "sub-{}".format(subject)
+        report_path = output_dir / "{}.html".format(_safe_filename(report_subject))
         report_path.write_text(report, encoding="utf-8")
-        logger.info("Wrote %s: %d rows, %d montages", report_path, len(rows), thumbnail_count)
+        logger.info("Wrote %s: %d studies, %d series, %d montages", report_path, len(study_sections), len(subject_rows), thumbnail_count)
     logger.info("Review report generation complete: decision file=%s", decision_path)
     return decision_path
 
 
 def _write_review_template(frame, decision_path: Path) -> None:
-    """Write candidate identifiers while preserving existing review fields."""
+    """Write hierarchical review rows while preserving reviewer edits."""
     import pandas as pd
 
     candidate_columns = [
-        "series_key", "series_instance_uid", "subject_folder", "study_instance_uid",
-        "study_date", "study_description", "series_number", "series_description",
-        "modality", "image_type", "num_slices", "z_extent_mm", "source_directory",
-        "tier", "tier_reason",
+        "series_key", "subject_id", "patient_id", "study_date", "study_description", "study_instance_uid",
+        "series_instance_uid", "series_number", "series_description", "image_type",
+        "num_slices", "z_extent_mm", "slice_thickness", "recommendation",
     ]
-    review_columns = ["decision", "reviewer", "review_timestamp", "comment"]
-    candidates = frame[frame["tier"].isin(("Tier 2", "Tier 3"))].copy()
+    review_columns = ["reviewer_decision", "notes"]
+    candidates = frame.copy()
     candidates["series_key"] = candidates.apply(_series_key, axis=1)
+    candidates["subject_id"] = candidates["subject_folder"].str.replace(r"^sub-", "", regex=True)
     for column in candidate_columns + review_columns:
         if column not in candidates:
-            candidates[column] = ""
+            if column == "reviewer_decision":
+                candidates[column] = candidates.get("recommendation", "")
+            else:
+                candidates[column] = ""
 
     if decision_path.exists():
         existing = pd.read_csv(decision_path, sep="\t", dtype=str).fillna("")
         if "series_key" not in existing.columns:
-            raise ValueError("Existing review.tsv must contain a series_key column")
+            if {"subject_id", "study_instance_uid", "series_instance_uid"}.issubset(existing.columns):
+                existing["series_key"] = existing.apply(lambda row: "|".join((str(row["subject_id"]), str(row["study_instance_uid"]), str(row["series_instance_uid"]))), axis=1)
+            else:
+                raise ValueError("Existing review.tsv must contain series_key or the new identifier columns")
         existing = existing.drop_duplicates("series_key").set_index("series_key")
         candidates = candidates.set_index("series_key")
+        if "decision" in existing.columns and "reviewer_decision" not in existing.columns:
+            existing["reviewer_decision"] = existing["decision"].map({"accept": "PRIMARY", "reject": "REJECT", "defer": ""}).fillna("")
+        if "comment" in existing.columns and "notes" not in existing.columns:
+            existing["notes"] = existing["comment"]
         for column in review_columns:
             if column in existing.columns:
-                candidates[column] = existing[column].reindex(candidates.index).fillna("")
+                values = existing[column].reindex(candidates.index)
+                candidates[column] = values.where(values != "", candidates[column]).fillna(candidates[column])
         logger.info(
-            "Preserved existing review decisions: %d of %d current candidates",
+            "Preserved existing review decisions: %d of %d current series",
             len(candidates.index.intersection(existing.index)), len(candidates),
         )
         candidates = candidates.reset_index()
     else:
-        logger.info("Creating review decision template for %d candidates", len(candidates))
+        logger.info("Creating study-level review template for %d series", len(candidates))
 
     candidates[candidate_columns + review_columns].to_csv(decision_path, sep="\t", index=False)
     logger.info("Wrote review decision template: %s (%d rows)", decision_path, len(candidates))
+
+
+def _ensure_review_columns(frame):
+    """Derive new review fields when reading an older scored inventory."""
+    if "study_group_key" not in frame:
+        frame["study_group_key"] = frame.apply(
+            lambda row: "|".join((str(row.get("subject_folder", "")), str(row.get("study_instance_uid", "") or row.get("study_date", "")))),
+            axis=1,
+        )
+    if "recommendation" not in frame:
+        frame["recommendation"] = "REJECT"
+        for study_key, indexes in frame.groupby("study_group_key", sort=False).groups.items():
+            candidates = frame.loc[indexes]
+            eligible = candidates[candidates.get("tier", "") != "Tier 4"]
+            if not eligible.empty:
+                frame.loc[eligible.index, "recommendation"] = "SECONDARY"
+                frame.loc[eligible.index[0], "recommendation"] = "PRIMARY"
+    return frame
+
+
+def _safe_filename(value: str) -> str:
+    value = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value))
+    return value or "subject"
 
 
 def _series_key(row) -> str:

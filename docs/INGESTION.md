@@ -18,8 +18,9 @@ Run the stages from the repository root:
 python scripts/inventory_ct_archive.py --root /path/to/archive --output inventory.tsv
 python scripts/score_ct_inventory.py --input inventory.tsv --output inventory_scored.tsv --config config/ingestion.example.yaml
 python scripts/review_ct_inventory.py --input inventory_scored.tsv --output-dir review --config config/ingestion.example.yaml
-# Edit review/review.tsv, then:
+# Edit review/review.tsv. Change reviewer_decision to PRIMARY, SECONDARY, or REJECT, then:
 python scripts/build_ct_manifest.py --inventory inventory_scored.tsv --review review/review.tsv --output manifest.tsv --config config/ingestion.example.yaml
+# Add --include-secondary to retain both PRIMARY and SECONDARY selections.
 python scripts/stage_ct_sourcedata.py --manifest manifest.tsv --archive-root /path/to/archive --bids-root /path/to/bids
 ```
 
@@ -40,4 +41,4 @@ and series counts, tier counts, review montage counts, and staging totals.
 Use `--log-level DEBUG` when you need per-file details such as existing staged
 files that were skipped.
 
-`inventory.tsv`, scored inventory, HTML reports, and sourcedata are generated. `review.tsv` is manually edited and preserved. `manifest.tsv` is the authoritative selected-series import list.
+`inventory.tsv`, scored inventory, subject-specific HTML reports, and sourcedata are generated. Scoring groups series by StudyInstanceUID, falling back to subject and study date, and recommends one PRIMARY series per study with other eligible acquisitions marked SECONDARY. The report table includes every series, while montages are generated only for PRIMARY and SECONDARY recommendations unless `review.detailed_review` is enabled. `review.tsv` is manually edited and preserved; its editable column is `reviewer_decision` with values `PRIMARY`, `SECONDARY`, or `REJECT`. By default the manifest includes PRIMARY rows only; `--include-secondary` also includes SECONDARY rows, and REJECT rows are never staged. `manifest.tsv` is the authoritative selected-series import list.

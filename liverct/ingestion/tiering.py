@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 def score_inventory(input_path: Path, output_path: Optional[Path] = None, config=None):
-    """Assign Tier 1-4 labels and preserve individual rule results."""
+    """Assign legacy tiers plus study-level primary/secondary recommendations."""
     import pandas as pd
 
     if config is None:
@@ -64,6 +64,9 @@ def score_inventory(input_path: Path, output_path: Optional[Path] = None, config
         reasons.append(reason)
     frame["tier"] = tiers
     frame["tier_reason"] = reasons
+    frame["study_group_key"] = frame.apply(_study_group_key, axis=1)
+    frame["candidate_score"] = frame.apply(_candidate_score, axis=1)
+    frame["recommendation"] = _recommendations(frame)
     frame["rule_version"] = str(config.values.get("config_version", "1"))
     tier_counts = frame["tier"].value_counts().to_dict()
     logger.info(
@@ -77,3 +80,39 @@ def score_inventory(input_path: Path, output_path: Optional[Path] = None, config
         frame.to_csv(output_path, sep="\t", index=False)
         logger.info("Wrote scored inventory: %s", output_path)
     return frame
+
+
+def _study_group_key(row) -> str:
+    subject = str(row.get("subject_folder", ""))
+    study_uid = str(row.get("study_instance_uid", ""))
+    study_date = str(row.get("study_date", ""))
+    return "|".join((subject, study_uid or study_date))
+
+
+def _candidate_score(row) -> int:
+    """Rank likely primary acquisitions without changing the tier rules."""
+    if str(row.get("tier", "")) == "Tier 4":
+        return -1000
+    score = 0
+    score += int(row.get("pass_modality", 0)) * 100
+    score += int(row.get("pass_torso_description", 0)) * 40
+    score += int(row.get("pass_original", 0)) * 20
+    score += int(row.get("pass_primary", 0)) * 15
+    score += int(row.get("pass_axial", 0)) * 15
+    score += int(row.get("pass_z_extent", 0)) * 10
+    score += int(row.get("pass_num_slices", 0)) * 10
+    return score
+
+
+def _recommendations(frame):
+    recommendations = ["REJECT"] * len(frame)
+    eligible = frame[
+        (frame["tier"] != "Tier 4")
+        & (frame["pass_modality"] == 1)
+        & (frame["reject_description"] == 0)
+    ]
+    for _, study_rows in eligible.groupby("study_group_key", sort=False):
+        primary_index = study_rows["candidate_score"].idxmax()
+        for index in study_rows.index:
+            recommendations[frame.index.get_loc(index)] = "PRIMARY" if index == primary_index else "SECONDARY"
+    return recommendations

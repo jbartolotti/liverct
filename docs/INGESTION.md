@@ -42,3 +42,8 @@ Use `--log-level DEBUG` when you need per-file details such as existing staged
 files that were skipped.
 
 `inventory.tsv`, scored inventory, subject-specific HTML reports, and sourcedata are generated. Scoring groups series by StudyInstanceUID, falling back to subject and study date, and recommends one PRIMARY series per study with other eligible acquisitions marked SECONDARY. The report table includes every series, while montages are generated only for PRIMARY and SECONDARY recommendations unless `review.detailed_review` is enabled. `review.tsv` is manually edited and preserved; its editable column is `reviewer_decision` with values `PRIMARY`, `SECONDARY`, or `REJECT`. By default the manifest includes PRIMARY rows only; `--include-secondary` also includes SECONDARY rows, and REJECT rows are never staged. `manifest.tsv` is the authoritative selected-series import list.
+
+Review HTML and TSV artifacts use the same subject, study-date, and numeric
+series-number ordering. The TSV includes an `index` column and an `is_data`
+column (`1` for series rows, `0` for date-separator rows); separator rows have
+blank metadata fields to make the file easier to scan and filter.

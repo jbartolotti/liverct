@@ -242,3 +242,34 @@ def test_review_template_prepopulates_candidates_and_preserves_decisions(tmp_pat
     rerun = pd.read_csv(review_path, sep="\t", dtype=str).fillna("")
     assert rerun.loc[0, "reviewer_decision"] == "SECONDARY"
     assert rerun.loc[0, "notes"] == "reviewer1"
+
+
+def test_review_artifacts_sort_by_date_and_numeric_series(tmp_path):
+    rows = []
+    for study_date, series_number, series_uid in [
+        ("20210102", "10", "s10"), ("20210102", "2", "s2"),
+        ("20200722", "11", "s11"), ("20200722", "1", "s1"),
+    ]:
+        rows.append({
+            "subject_folder": "011", "study_instance_uid": "study-{}".format(study_date),
+            "series_instance_uid": series_uid, "study_date": study_date,
+            "study_description": "ABDOMEN", "series_number": series_number,
+            "series_description": "ABD", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL",
+            "num_slices": "100", "z_extent_mm": "250", "source_directory": str(tmp_path),
+            "tier": "Tier 2", "tier_reason": "review", "recommendation": "PRIMARY",
+        })
+    scored_path = tmp_path / "scored.tsv"
+    output_dir = tmp_path / "review"
+    pd.DataFrame(rows).to_csv(scored_path, sep="\t", index=False)
+
+    review_path = generate_review_reports(scored_path, output_dir)
+    review = pd.read_csv(review_path, sep="\t", dtype=str, keep_default_na=False)
+    data = review[review["is_data"] == "1"]
+    assert list(zip(data["study_date"], data["series_number"])) == [
+        ("20200722", "1"), ("20200722", "11"), ("20210102", "2"), ("20210102", "10")
+    ]
+    assert list(review.loc[review["is_data"] == "0", "index"]) == ["3"]
+    report = (output_dir / "sub-011.html").read_text(encoding="utf-8")
+    assert report.index("Study Date: 2020-07-22") < report.index("Study Date: 2021-01-02")
+    assert report.index(">1</td>") < report.index(">11</td>")
+    assert report.index(">2</td>") < report.index(">10</td>")

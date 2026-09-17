@@ -35,9 +35,12 @@ def generate_review_reports(scored_inventory: Path, output_dir: Path, config=Non
         for study_key, study_rows in subject_rows.groupby("scan_group_key", sort=False, dropna=False):
             study_rows = _sort_review_rows(study_rows)
             first = study_rows.iloc[0]
+            review_rows = _human_review_rows(study_rows)
             series_rows = []
-            for _, row in study_rows.iterrows():
+            for _, row in review_rows.iterrows():
                 recommendation = row.get("recommendation", "REJECT")
+                if not row.get("series_key", ""):
+                    continue
                 should_render = detailed_review or recommendation in ("PRIMARY", "SECONDARY")
                 thumbnail = _make_thumbnail(row, assets, config) if should_render else ""
                 if thumbnail:
@@ -50,6 +53,8 @@ def generate_review_reports(scored_inventory: Path, output_dir: Path, config=Non
                     escape(str(row.get("slice_thickness", ""))), image_html))
             study_uids = ", ".join(sorted(set(str(value) for value in study_rows["study_instance_uid"] if value)))
             scan_status = ", ".join(sorted(set(str(value) for value in study_rows["candidate_status"] if value)))
+            if not series_rows:
+                series_rows.append("<tr><td colspan='8'>{}</td></tr>".format(escape(str(review_rows.iloc[0].get("candidate_reason", "No candidate sequence available")))))
             study_sections.append("<section><h2>Study Date: {}</h2><p><strong>Study Description:</strong> {}</p><p><strong>Study Instance UID(s):</strong> {}</p><p><strong>Automatic status:</strong> {}</p><table><thead><tr><th>Recommendation</th><th>Series #</th><th>Description</th><th>Image Type</th><th>Num Slices</th><th>Z Extent (mm)</th><th>Slice Thickness</th><th>Montage</th></tr></thead><tbody>{}</tbody></table></section>".format(
                 escape(_display_date(first.get("study_date", ""))), escape(str(first.get("study_description", ""))),
                 escape(study_uids or str(study_key)), escape(scan_status), "".join(series_rows)))
@@ -71,15 +76,15 @@ def _write_review_template(frame, decision_path: Path) -> None:
     import pandas as pd
 
     candidate_columns = [
-        "index", "is_data", "series_key", "subject_id", "patient_id", "study_date", "study_description", "study_instance_uid",
+        "index", "is_data", "review_row_type", "series_key", "subject_id", "patient_id", "study_date", "study_description", "study_instance_uid",
         "series_instance_uid", "series_number", "series_description", "image_type",
         "num_slices", "z_extent_mm", "slice_thickness", "recommendation", "candidate_score",
         "candidate_status", "candidate_rank", "is_auto_primary", "candidate_reason",
     ]
     review_columns = ["reviewer_decision", "notes"]
-    candidates = frame.copy()
+    candidates = pd.concat([_human_review_rows(group) for _, group in frame.groupby("scan_group_key", sort=False, dropna=False)], ignore_index=True)
     candidates["is_data"] = "1"
-    candidates["series_key"] = candidates.apply(_series_key, axis=1)
+    candidates["is_data"] = candidates["series_key"].ne("").astype(int)
     candidates["subject_id"] = candidates["subject_folder"].str.replace(r"^sub-", "", regex=True)
     for column in candidate_columns + review_columns:
         if column not in candidates:
@@ -123,7 +128,9 @@ def _write_review_template(frame, decision_path: Path) -> None:
         subject = str(row.get("subject_id", ""))
         study_date = str(row.get("study_date", ""))
         if output_rows and (subject != previous_subject or study_date != previous_date):
-            output_rows.append({column: "" for column in candidate_columns + review_columns})
+            separator = {column: "" for column in candidate_columns + review_columns}
+            separator["review_row_type"] = "SEPARATOR"
+            output_rows.append(separator)
         output_rows.append(row.to_dict())
         previous_subject = subject
         previous_date = study_date
@@ -133,6 +140,38 @@ def _write_review_template(frame, decision_path: Path) -> None:
     output["is_data"] = output["series_key"].ne("").astype(int)
     output.to_csv(decision_path, sep="\t", index=False, lineterminator="\n")
     logger.info("Wrote review decision template: %s (%d data rows, %d total rows)", decision_path, len(candidates), len(output))
+
+
+def _human_review_rows(scan_rows):
+    """Return the compact rows intended for human review for one scan date."""
+    import pandas as pd
+
+    scan_rows = scan_rows.copy()
+    status = str(scan_rows.iloc[0].get("candidate_status", "NO_CANDIDATE")) if not scan_rows.empty else "NO_CANDIDATE"
+    if status == "NO_CANDIDATE":
+        row = {column: "" for column in scan_rows.columns}
+        first = scan_rows.iloc[0] if not scan_rows.empty else row
+        row.update({
+            "review_row_type": "STATUS", "series_key": "", "subject_folder": first.get("subject_folder", ""),
+            "subject_id": str(first.get("subject_folder", "")).replace("sub-", "", 1),
+            "patient_id": first.get("patient_id", ""), "study_date": first.get("study_date", ""),
+            "study_description": first.get("study_description", ""), "study_instance_uid": "",
+            "candidate_status": "NO_CANDIDATE", "candidate_reason": "No eligible abdominal CT candidate sequence for this subject/date",
+            "recommendation": "REJECT", "reviewer_decision": "REJECT",
+        })
+        return pd.DataFrame([row])
+
+    automatic_candidate = scan_rows.get("automatic_candidate", pd.Series(0, index=scan_rows.index)).astype(str)
+    eligible = scan_rows[automatic_candidate == "1"].copy()
+    if status == "AUTO_PRIMARY":
+        auto_primary = eligible.get("is_auto_primary", pd.Series(0, index=eligible.index)).astype(str)
+        eligible = eligible[auto_primary == "1"]
+    eligible = _sort_review_rows(eligible)
+    eligible["review_row_type"] = "SERIES"
+    eligible["series_key"] = eligible.apply(_series_key, axis=1)
+    eligible["subject_id"] = eligible["subject_folder"].str.replace(r"^sub-", "", regex=True)
+    eligible["reviewer_decision"] = eligible["recommendation"]
+    return eligible
 
 
 def _sort_review_rows(frame):
@@ -180,6 +219,8 @@ def _ensure_review_columns(frame):
         frame["is_auto_primary"] = 0
     if "candidate_reason" not in frame:
         frame["candidate_reason"] = ""
+    if "automatic_candidate" not in frame:
+        frame["automatic_candidate"] = (frame["recommendation"] != "REJECT").astype(int)
     return frame
 
 

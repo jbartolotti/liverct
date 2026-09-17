@@ -259,10 +259,9 @@ def test_review_template_prepopulates_candidates_and_preserves_decisions(tmp_pat
 
     review_path = generate_review_reports(scored_path, output_dir)
     review = pd.read_csv(review_path, sep="\t", dtype=str).fillna("")
-    assert list(review["series_instance_uid"]) == ["s1", "s2"]
+    assert list(review.loc[review["is_data"] == "1", "series_instance_uid"]) == ["s1"]
     assert review.loc[0, "series_key"] == "011|study1|s1"
     assert review.loc[0, "reviewer_decision"] == "PRIMARY"
-    assert review.loc[1, "recommendation"] == "REJECT"
 
     review.loc[0, "reviewer_decision"] = "SECONDARY"
     review.loc[0, "notes"] = "reviewer1"
@@ -271,6 +270,20 @@ def test_review_template_prepopulates_candidates_and_preserves_decisions(tmp_pat
     rerun = pd.read_csv(review_path, sep="\t", dtype=str).fillna("")
     assert rerun.loc[0, "reviewer_decision"] == "SECONDARY"
     assert rerun.loc[0, "notes"] == "reviewer1"
+
+
+def test_review_template_is_compact_by_scan_date(tmp_path):
+    scored = pd.DataFrame([
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "primary", "study_date": "20200722", "series_number": "2", "series_description": "ABD", "study_description": "ABDOMEN", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "num_slices": "100", "z_extent_mm": "300", "tier": "Tier 1", "recommendation": "PRIMARY", "candidate_status": "AUTO_PRIMARY", "automatic_candidate": "1", "is_auto_primary": "1", "candidate_score": "150", "source_directory": str(tmp_path)},
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "scout", "study_date": "20200722", "series_number": "1", "series_description": "SCOUT", "study_description": "ABDOMEN", "image_type": "LOCALIZER", "num_slices": "1", "tier": "Tier 4", "recommendation": "REJECT", "candidate_status": "AUTO_PRIMARY", "automatic_candidate": "0", "source_directory": str(tmp_path)},
+        {"subject_folder": "011", "study_instance_uid": "study2", "series_instance_uid": "none", "study_date": "20210830", "series_number": "1", "series_description": "HEAD", "study_description": "HEAD", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "num_slices": "100", "tier": "Tier 4", "recommendation": "REJECT", "candidate_status": "NO_CANDIDATE", "automatic_candidate": "0", "candidate_reason": "no eligible candidate", "source_directory": str(tmp_path)},
+    ])
+    scored_path = tmp_path / "scored.tsv"
+    scored.to_csv(scored_path, sep="\t", index=False)
+    review = pd.read_csv(generate_review_reports(scored_path, tmp_path / "review"), sep="\t", dtype=str, keep_default_na=False)
+    assert list(review.loc[review["is_data"] == "1", "series_instance_uid"]) == ["primary"]
+    assert set(review.loc[review["is_data"] == "0", "review_row_type"]) == {"SEPARATOR", "STATUS"}
+    assert len(review) == 3
 
 
 def test_review_artifacts_sort_by_date_and_numeric_series(tmp_path):

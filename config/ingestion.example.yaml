@@ -24,6 +24,69 @@ tiering:
     - CORONAL
     - REFORMAT
     - PROTOCOL
+  strong_abdomen_terms:
+    - ABDOMEN
+    - ABD
+    - ABD/PEL
+    - ABDOMEN/PELVIS
+    - A/P
+    - CAP
+    - TORSO
+    - TRUNK
+  supporting_abdomen_terms:
+    - PELVIS
+    - PELV
+    - LIVER
+    - HEPATIC
+    - PORTAL
+    - RENAL
+    - KIDNEY
+    - PANCREAS
+  anatomy_exclude_terms:
+    - HEAD
+    - BRAIN
+    - NECK
+    - C-SPINE
+    - CERVICAL
+    - SINUS
+    - FACIAL
+    - MAXILLOFACIAL
+    - CHEST ONLY
+    - LUNG ONLY
+    - UPPER EXTREMITY
+    - LOWER EXTREMITY
+    - LEG
+    - FEMUR
+    - KNEE
+    - ANKLE
+    - FOOT
+    - ARM
+    - ELBOW
+    - WRIST
+    - HAND
+    - SHOULDER
+    - CALF
+    - TIBIA
+    - TIB/FIB
+  derived_exclude_terms:
+    - DERIVED
+    - SECONDARY
+    - LOCALIZER
+    - SCOUT
+    - MIP
+    - MINIP
+    - VOLUME
+    - 3D
+    - SCREENSHOT
+    - CORONAL
+    - SAGITTAL
+    - REFORMAT
+    - RECON
+    - MPR
+    - CURVED
+    - OBLIQUE
+  auto_min_score: 110
+  auto_min_margin: 10
 
 review:
   thumbnail_count: 6

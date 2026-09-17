@@ -32,7 +32,7 @@ def generate_review_reports(scored_inventory: Path, output_dir: Path, config=Non
     for subject, subject_rows in subjects:
         study_sections = []
         thumbnail_count = 0
-        for study_key, study_rows in subject_rows.groupby("study_group_key", sort=False, dropna=False):
+        for study_key, study_rows in subject_rows.groupby("scan_group_key", sort=False, dropna=False):
             study_rows = _sort_review_rows(study_rows)
             first = study_rows.iloc[0]
             series_rows = []
@@ -48,9 +48,11 @@ def generate_review_reports(scored_inventory: Path, output_dir: Path, config=Non
                     escape(str(row.get("series_description", ""))), escape(str(row.get("image_type", ""))),
                     escape(str(row.get("num_slices", ""))), escape(str(row.get("z_extent_mm", ""))),
                     escape(str(row.get("slice_thickness", ""))), image_html))
-            study_sections.append("<section><h2>Study Date: {}</h2><p><strong>Study Description:</strong> {}</p><p><strong>Study Instance UID:</strong> {}</p><table><thead><tr><th>Recommendation</th><th>Series #</th><th>Description</th><th>Image Type</th><th>Num Slices</th><th>Z Extent (mm)</th><th>Slice Thickness</th><th>Montage</th></tr></thead><tbody>{}</tbody></table></section>".format(
+            study_uids = ", ".join(sorted(set(str(value) for value in study_rows["study_instance_uid"] if value)))
+            scan_status = ", ".join(sorted(set(str(value) for value in study_rows["candidate_status"] if value)))
+            study_sections.append("<section><h2>Study Date: {}</h2><p><strong>Study Description:</strong> {}</p><p><strong>Study Instance UID(s):</strong> {}</p><p><strong>Automatic status:</strong> {}</p><table><thead><tr><th>Recommendation</th><th>Series #</th><th>Description</th><th>Image Type</th><th>Num Slices</th><th>Z Extent (mm)</th><th>Slice Thickness</th><th>Montage</th></tr></thead><tbody>{}</tbody></table></section>".format(
                 escape(_display_date(first.get("study_date", ""))), escape(str(first.get("study_description", ""))),
-                escape(str(first.get("study_instance_uid", study_key))), "".join(series_rows)))
+                escape(study_uids or str(study_key)), escape(scan_status), "".join(series_rows)))
         patient_ids = sorted(set(str(value) for value in subject_rows.get("patient_id", [] ) if value))
         report = "<!doctype html><meta charset='utf-8'><title>Subject {0}</title><h1>Subject {0}</h1><dl><dt>Patient ID</dt><dd>{1}</dd><dt>Total Studies</dt><dd>{2}</dd><dt>Study Dates</dt><dd>{3}</dd></dl>{4}".format(
             escape(str(subject)), escape(", ".join(patient_ids)), len(study_sections),
@@ -71,7 +73,8 @@ def _write_review_template(frame, decision_path: Path) -> None:
     candidate_columns = [
         "index", "is_data", "series_key", "subject_id", "patient_id", "study_date", "study_description", "study_instance_uid",
         "series_instance_uid", "series_number", "series_description", "image_type",
-        "num_slices", "z_extent_mm", "slice_thickness", "recommendation",
+        "num_slices", "z_extent_mm", "slice_thickness", "recommendation", "candidate_score",
+        "candidate_status", "candidate_rank", "is_auto_primary", "candidate_reason",
     ]
     review_columns = ["reviewer_decision", "notes"]
     candidates = frame.copy()
@@ -156,14 +159,27 @@ def _ensure_review_columns(frame):
             lambda row: "|".join((str(row.get("subject_folder", "")), str(row.get("study_instance_uid", "") or row.get("study_date", "")))),
             axis=1,
         )
+    if "scan_group_key" not in frame:
+        frame["scan_group_key"] = frame.apply(
+            lambda row: "|".join((str(row.get("subject_folder", "")), str(row.get("study_date", "")))),
+            axis=1,
+        )
     if "recommendation" not in frame:
         frame["recommendation"] = "REJECT"
-        for study_key, indexes in frame.groupby("study_group_key", sort=False).groups.items():
+        for study_key, indexes in frame.groupby("scan_group_key", sort=False).groups.items():
             candidates = frame.loc[indexes]
             eligible = candidates[candidates.get("tier", "") != "Tier 4"]
             if not eligible.empty:
                 frame.loc[eligible.index, "recommendation"] = "SECONDARY"
                 frame.loc[eligible.index[0], "recommendation"] = "PRIMARY"
+    if "candidate_status" not in frame:
+        frame["candidate_status"] = "REVIEW_REQUIRED"
+    if "candidate_rank" not in frame:
+        frame["candidate_rank"] = ""
+    if "is_auto_primary" not in frame:
+        frame["is_auto_primary"] = 0
+    if "candidate_reason" not in frame:
+        frame["candidate_reason"] = ""
     return frame
 
 

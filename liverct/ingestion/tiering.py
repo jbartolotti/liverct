@@ -2,6 +2,7 @@
 
 import logging
 from pathlib import Path
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -19,8 +20,10 @@ def score_inventory(input_path: Path, output_path: Optional[Path] = None, config
     rules = config.tiering
     abdomen_terms = [str(term).upper() for term in rules.get("abdomen_terms", [])]
     reject_terms = [str(term).upper() for term in rules.get("reject_terms", [])]
-    abdomen_pattern = "|".join(abdomen_terms)
-    reject_pattern = "|".join(reject_terms)
+    strong_abdomen_terms = [str(term).upper() for term in rules.get("strong_abdomen_terms", abdomen_terms)]
+    supporting_abdomen_terms = [str(term).upper() for term in rules.get("supporting_abdomen_terms", [])]
+    anatomy_exclude_terms = [str(term).upper() for term in rules.get("anatomy_exclude_terms", [])]
+    derived_exclude_terms = [str(term).upper() for term in rules.get("derived_exclude_terms", reject_terms)]
     logger.info(
         "Scoring rules: required_modality=%s min_z_extent_mm=%s min_num_slices=%s",
         rules.get("required_modality", "CT"),
@@ -32,7 +35,8 @@ def score_inventory(input_path: Path, output_path: Optional[Path] = None, config
     image_type = frame.get("image_type", "").str.upper()
     series = frame.get("series_description", "").str.upper()
     study = frame.get("study_description", "").str.upper()
-    text = series + " " + study
+    body_part = frame.get("body_part_examined", pd.Series("", index=frame.index)).str.upper()
+    text = series + " " + study + " " + body_part
     z_extent = pd.to_numeric(frame.get("z_extent_mm", ""), errors="coerce")
     num_slices = pd.to_numeric(frame.get("num_slices", ""), errors="coerce")
 
@@ -40,8 +44,12 @@ def score_inventory(input_path: Path, output_path: Optional[Path] = None, config
     frame["pass_original"] = image_type.str.contains("ORIGINAL", regex=False).astype(int)
     frame["pass_primary"] = image_type.str.contains("PRIMARY", regex=False).astype(int)
     frame["pass_axial"] = image_type.str.contains("AXIAL", regex=False).astype(int)
-    frame["pass_torso_description"] = text.str.contains(abdomen_pattern, regex=True, na=False).astype(int) if abdomen_pattern else 0
-    frame["reject_description"] = text.str.contains(reject_pattern, regex=True, na=False).astype(int) if reject_pattern else 0
+    frame["pass_torso_description"] = text.map(lambda value: int(_contains_any(value, abdomen_terms)))
+    frame["strong_abdomen_evidence"] = text.map(lambda value: int(_contains_any(value, strong_abdomen_terms)))
+    frame["supporting_abdomen_evidence"] = text.map(lambda value: int(_contains_any(value, supporting_abdomen_terms)))
+    frame["reject_anatomy"] = text.map(lambda value: int(_contains_any(value, anatomy_exclude_terms)))
+    frame["reject_derived"] = (image_type + " " + text).map(lambda value: int(_contains_any(value, derived_exclude_terms)))
+    frame["reject_description"] = frame["reject_derived"]
     frame["pass_z_extent"] = (z_extent >= float(rules.get("min_z_extent_mm", 200.0))).fillna(False).astype(int)
     frame["pass_num_slices"] = (num_slices >= int(rules.get("min_num_slices", 50))).fillna(False).astype(int)
     frame["reject_short_series"] = num_slices.isin([1, 2]).astype(int)
@@ -65,8 +73,10 @@ def score_inventory(input_path: Path, output_path: Optional[Path] = None, config
     frame["tier"] = tiers
     frame["tier_reason"] = reasons
     frame["study_group_key"] = frame.apply(_study_group_key, axis=1)
+    frame["scan_group_key"] = frame.apply(_scan_group_key, axis=1)
     frame["candidate_score"] = frame.apply(_candidate_score, axis=1)
-    frame["recommendation"] = _recommendations(frame)
+    frame["automatic_candidate"] = frame.apply(_automatic_candidate, axis=1).astype(int)
+    frame["recommendation"], frame["candidate_status"], frame["candidate_rank"], frame["is_auto_primary"], frame["candidate_reason"] = _recommendations(frame, rules)
     frame["rule_version"] = str(config.values.get("config_version", "1"))
     tier_counts = frame["tier"].value_counts().to_dict()
     logger.info(
@@ -89,30 +99,88 @@ def _study_group_key(row) -> str:
     return "|".join((subject, study_uid or study_date))
 
 
+def _scan_group_key(row) -> str:
+    return "|".join((str(row.get("subject_folder", "")), str(row.get("study_date", ""))))
+
+
 def _candidate_score(row) -> int:
-    """Rank likely primary acquisitions without changing the tier rules."""
-    if str(row.get("tier", "")) == "Tier 4":
-        return -1000
+    """Rank strict automatic candidates with an explainable score."""
+    if not _automatic_candidate(row):
+        return -1
     score = 0
-    score += int(row.get("pass_modality", 0)) * 100
-    score += int(row.get("pass_torso_description", 0)) * 40
-    score += int(row.get("pass_original", 0)) * 20
-    score += int(row.get("pass_primary", 0)) * 15
-    score += int(row.get("pass_axial", 0)) * 15
-    score += int(row.get("pass_z_extent", 0)) * 10
-    score += int(row.get("pass_num_slices", 0)) * 10
+    score += int(row.get("pass_original", 0)) * 30
+    score += int(row.get("pass_primary", 0)) * 25
+    score += int(row.get("pass_axial", 0)) * 25
+    score += int(row.get("strong_abdomen_evidence", 0)) * 30
+    score += int(row.get("supporting_abdomen_evidence", 0)) * 10
+    score += int(row.get("pass_z_extent", 0)) * 15
+    try:
+        z_extent = float(row.get("z_extent_mm", ""))
+    except (TypeError, ValueError):
+        z_extent = 0
+    if z_extent >= 300:
+        score += 10
+    try:
+        num_slices = float(row.get("num_slices", ""))
+    except (TypeError, ValueError):
+        num_slices = 0
+    if num_slices >= 100:
+        score += 15
+    try:
+        thickness = float(row.get("slice_thickness", ""))
+    except (TypeError, ValueError):
+        thickness = 0
+    if 0 < thickness <= 3:
+        score += 10
     return score
 
 
-def _recommendations(frame):
+def _automatic_candidate(row) -> bool:
+    return all(int(row.get(name, 0)) == 1 for name in (
+        "pass_modality", "pass_original", "pass_primary", "pass_axial",
+        "strong_abdomen_evidence", "pass_z_extent", "pass_num_slices",
+    )) and int(row.get("reject_anatomy", 0)) == 0 and int(row.get("reject_derived", 0)) == 0 and int(row.get("reject_short_series", 0)) == 0
+
+
+def _recommendations(frame, rules):
+    import pandas as pd
+
     recommendations = ["REJECT"] * len(frame)
-    eligible = frame[
-        (frame["tier"] != "Tier 4")
-        & (frame["pass_modality"] == 1)
-        & (frame["reject_description"] == 0)
-    ]
-    for _, study_rows in eligible.groupby("study_group_key", sort=False):
-        primary_index = study_rows["candidate_score"].idxmax()
-        for index in study_rows.index:
-            recommendations[frame.index.get_loc(index)] = "PRIMARY" if index == primary_index else "SECONDARY"
-    return recommendations
+    statuses = ["NO_CANDIDATE"] * len(frame)
+    ranks = [""] * len(frame)
+    is_primary = [0] * len(frame)
+    reasons = ["no candidate passed automatic eligibility gates"] * len(frame)
+    min_score = int(rules.get("auto_min_score", 110))
+    min_margin = int(rules.get("auto_min_margin", 10))
+    for _, scan_rows in frame.groupby("scan_group_key", sort=False):
+        eligible = scan_rows[scan_rows["automatic_candidate"] == 1].copy()
+        eligible["_series_number_sort"] = pd.to_numeric(eligible.get("series_number", pd.Series("", index=eligible.index)), errors="coerce")
+        eligible["_series_uid_sort"] = eligible.get("series_instance_uid", pd.Series("", index=eligible.index)).astype(str)
+        eligible = eligible.sort_values(
+            ["candidate_score", "z_extent_mm", "num_slices", "_series_number_sort", "_series_uid_sort"],
+            ascending=[False, False, False, True, True], na_position="last", kind="mergesort")
+        if eligible.empty:
+            continue
+        best = eligible.iloc[0]
+        second_score = int(eligible.iloc[1]["candidate_score"]) if len(eligible) > 1 else -1
+        score = int(best["candidate_score"])
+        status = "AUTO_PRIMARY" if score >= min_score and (len(eligible) == 1 or score - second_score >= min_margin) else "REVIEW_REQUIRED"
+        reason = "best strict abdominal axial candidate"
+        if status == "REVIEW_REQUIRED":
+            reason = "candidate score or separation from runner-up is below automatic threshold"
+        for index in scan_rows.index:
+            statuses[frame.index.get_loc(index)] = status
+        for rank, (index, row) in enumerate(eligible.iterrows(), start=1):
+            position = frame.index.get_loc(index)
+            ranks[position] = str(rank)
+            statuses[position] = status
+            reasons[position] = reason
+            recommendations[position] = "PRIMARY" if index == best.name else "SECONDARY"
+            if status == "AUTO_PRIMARY" and index == best.name:
+                is_primary[position] = 1
+    return recommendations, statuses, ranks, is_primary, reasons
+
+
+def _contains_any(value, terms) -> bool:
+    text = str(value).upper()
+    return any(re.search(r"(?:^|[^A-Z0-9]){}(?:$|[^A-Z0-9])".format(re.escape(term)), text) for term in terms)

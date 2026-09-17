@@ -99,15 +99,44 @@ def test_scoring_assigns_four_tiers(tmp_path):
 
 def test_scoring_recommends_one_primary_per_study(tmp_path):
     inventory = pd.DataFrame([
-        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "s1", "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "series_description": "ABD", "study_description": "ABDOMEN", "z_extent_mm": "250", "num_slices": "100"},
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "s1", "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "series_description": "ABD", "study_description": "ABDOMEN", "z_extent_mm": "350", "num_slices": "100"},
         {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "s2", "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY", "series_description": "VENOUS", "study_description": "ABDOMEN", "z_extent_mm": "250", "num_slices": "100"},
         {"subject_folder": "011", "study_instance_uid": "study2", "series_instance_uid": "s3", "study_date": "20210830", "modality": "CT", "image_type": "LOCALIZER", "series_description": "SCOUT", "study_description": "ABDOMEN", "z_extent_mm": "", "num_slices": "1"},
     ])
     source = tmp_path / "inventory.tsv"
     inventory.to_csv(source, sep="\t", index=False)
     scored = score_inventory(source)
-    assert list(scored["recommendation"]) == ["PRIMARY", "SECONDARY", "REJECT"]
+    assert list(scored["recommendation"]) == ["PRIMARY", "REJECT", "REJECT"]
     assert scored.loc[0, "study_group_key"] == "011|study1"
+
+
+def test_scoring_selects_one_primary_per_subject_date_across_studies(tmp_path):
+    inventory = pd.DataFrame([
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "s1", "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "series_description": "ABD", "study_description": "ABDOMEN", "z_extent_mm": "350", "num_slices": "100"},
+        {"subject_folder": "011", "study_instance_uid": "study2", "series_instance_uid": "s2", "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "series_description": "ABD", "study_description": "ABDOMEN", "z_extent_mm": "250", "num_slices": "100"},
+        {"subject_folder": "011", "study_instance_uid": "study2", "series_instance_uid": "head", "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "series_description": "HEAD", "study_description": "HEAD", "z_extent_mm": "250", "num_slices": "100"},
+    ])
+    source = tmp_path / "inventory.tsv"
+    inventory.to_csv(source, sep="\t", index=False)
+    scored = score_inventory(source)
+    assert scored["scan_group_key"].nunique() == 1
+    assert list(scored.loc[scored["recommendation"] == "PRIMARY", "series_instance_uid"]) == ["s1"]
+    assert set(scored.loc[scored["series_instance_uid"] == "head", "recommendation"]) == {"REJECT"}
+    assert set(scored.loc[scored["series_instance_uid"] == "s1", "candidate_status"]) == {"AUTO_PRIMARY"}
+    assert scored["is_auto_primary"].sum() == 1
+
+
+def test_scoring_affirms_no_candidate_for_non_abdominal_scan(tmp_path):
+    inventory = pd.DataFrame([
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "head", "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "series_description": "HEAD", "study_description": "HEAD", "z_extent_mm": "250", "num_slices": "100"},
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "scout", "study_date": "20200722", "modality": "CT", "image_type": "LOCALIZER", "series_description": "SCOUT", "study_description": "ABDOMEN", "z_extent_mm": "", "num_slices": "1"},
+    ])
+    source = tmp_path / "inventory.tsv"
+    inventory.to_csv(source, sep="\t", index=False)
+    scored = score_inventory(source)
+    assert set(scored["candidate_status"]) == {"NO_CANDIDATE"}
+    assert set(scored["recommendation"]) == {"REJECT"}
+    assert scored["is_auto_primary"].sum() == 0
 
 
 def test_manifest_includes_secondary_only_when_requested(tmp_path):

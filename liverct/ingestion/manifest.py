@@ -17,6 +17,9 @@ def build_manifest(scored_inventory: Path, review_path: Path, output_path: Path,
         config = IngestionConfig()
     inventory = pd.read_csv(scored_inventory, sep="\t", dtype=str).fillna("")
     review = pd.read_csv(review_path, sep="\t", dtype=str).fillna("")
+    if "is_data" in review.columns:
+        review = review[review["is_data"].astype(str) == "1"]
+    review = review[review.get("series_key", "") != ""]
     logger.info(
         "Building manifest: inventory=%s (%d rows), review=%s (%d rows)",
         scored_inventory, len(inventory), review_path, len(review),
@@ -54,7 +57,7 @@ def build_manifest(scored_inventory: Path, review_path: Path, output_path: Path,
         decision_counts[decision] += 1
         if decision == "REJECT" or (decision == "SECONDARY" and not include_secondary):
             continue
-        study_key = str(row.get("study_group_key", _study_group_key(row)))
+        study_key = str(row.get("scan_group_key", _scan_group_key(row)))
         if decision == "PRIMARY" and study_key in selected_primary:
             raise ValueError("Multiple PRIMARY series selected for study {}".format(study_key))
         if decision == "PRIMARY":
@@ -92,6 +95,10 @@ def _series_key(row) -> str:
 
 def _study_group_key(row) -> str:
     return "|".join((str(row.get("subject_folder", "")), str(row.get("study_instance_uid", "") or row.get("study_date", ""))))
+
+
+def _scan_group_key(row) -> str:
+    return "|".join((str(row.get("subject_folder", "")), str(row.get("study_date", ""))))
 
 
 def _subject_id(row) -> str:

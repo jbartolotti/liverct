@@ -47,3 +47,18 @@ Review HTML and TSV artifacts use the same subject, study-date, and numeric
 series-number ordering. The TSV includes an `index` column and an `is_data`
 column (`1` for series rows, `0` for date-separator rows); separator rows have
 blank metadata fields to make the file easier to scan and filter.
+
+Automatic candidate selection is performed once per subject and study date,
+even when that date contains multiple `StudyInstanceUID` values. A candidate
+must be CT, `ORIGINAL`, `PRIMARY`, and `AXIAL`, have strong abdominal/torso
+evidence, at least 50 slices, and at least 200 mm of z coverage. Head, neck,
+chest-only, extremity, scout/localizer, dose, derived, reformatted, MIP, and
+other explicitly excluded series cannot be automatic candidates. The scorer
+adds `candidate_score`, `candidate_rank`, `candidate_status`,
+`is_auto_primary`, and `candidate_reason` to the scored inventory.
+
+The default automatic score threshold is 110, with a minimum 10-point margin
+over the runner-up. A clear winner is marked `AUTO_PRIMARY`; an ambiguous
+group is marked `REVIEW_REQUIRED`; and a date with no eligible candidates is
+affirmatively marked `NO_CANDIDATE`. The thresholds and term lists are
+configurable under `tiering`.

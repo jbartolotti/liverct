@@ -94,11 +94,11 @@ def _series_key(row) -> str:
 
 
 def _study_group_key(row) -> str:
-    return "|".join((str(row.get("subject_folder", "")), str(row.get("study_instance_uid", "") or row.get("study_date", ""))))
+    return "|".join((str(row.get("patient_id", "")), str(row.get("study_instance_uid", "") or row.get("study_date", ""))))
 
 
 def _scan_group_key(row) -> str:
-    return "|".join((str(row.get("subject_folder", "")), str(row.get("study_date", ""))))
+    return "|".join((str(row.get("patient_id", "")), str(row.get("study_date", ""))))
 
 
 def _subject_id(row) -> str:

@@ -108,7 +108,7 @@ def test_scoring_recommends_one_primary_per_study(tmp_path):
     inventory.to_csv(source, sep="\t", index=False)
     scored = score_inventory(source)
     assert list(scored["recommendation"]) == ["PRIMARY", "SECONDARY", "REJECT"]
-    assert scored.loc[0, "study_group_key"] == "011|study1"
+    assert scored.loc[0, "study_group_key"] == "|study1"
 
 
 def test_scoring_selects_one_primary_per_subject_date_across_studies(tmp_path):
@@ -527,3 +527,21 @@ def test_review_html_groups_by_patient_id_not_subject_folder(tmp_path):
     assert "Study Date: 2021-08-30" in report
     assert not (output_dir / "sub-011.html").exists()
     assert not (output_dir / "sub-012.html").exists()
+
+
+def test_same_folder_date_different_patients_are_separate_scan_groups(tmp_path):
+    scored = pd.DataFrame([
+        {"subject_folder": "shared-folder", "patient_id": "patient-1", "study_instance_uid": "study1", "series_instance_uid": "s1", "study_date": "20200722", "study_description": "ABDOMEN", "series_number": "1", "series_description": "ABD", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "num_slices": "100", "z_extent_mm": "250", "source_directory": str(tmp_path), "tier": "Tier 2", "recommendation": "PRIMARY", "candidate_status": "REVIEW_REQUIRED", "automatic_candidate": "1", "candidate_score": "80", "scan_group_key": "shared-folder|20200722"},
+        {"subject_folder": "shared-folder", "patient_id": "patient-2", "study_instance_uid": "study2", "series_instance_uid": "s2", "study_date": "20200722", "study_description": "ABDOMEN", "series_number": "1", "series_description": "ABD", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "num_slices": "100", "z_extent_mm": "80", "source_directory": str(tmp_path), "tier": "Tier 2", "recommendation": "PRIMARY", "candidate_status": "REVIEW_REQUIRED", "automatic_candidate": "1", "candidate_score": "80", "scan_group_key": "shared-folder|20200722"},
+    ])
+    scored_path = tmp_path / "scored.tsv"
+    output_dir = tmp_path / "review"
+    scored.to_csv(scored_path, sep="\t", index=False)
+
+    generate_review_reports(scored_path, output_dir)
+
+    review = pd.read_csv(output_dir / "review.tsv", sep="\t", dtype=str, keep_default_na=False)
+    data = review[review["is_data"] == "1"]
+    assert set(data["patient_id"]) == {"patient-1", "patient-2"}
+    assert (output_dir / "sub-patient-1.html").exists()
+    assert (output_dir / "sub-patient-2.html").exists()

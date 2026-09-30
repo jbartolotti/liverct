@@ -57,8 +57,9 @@ defaults to `1`; larger values enable process-based montage generation. Fixed
 `review.window_min` and `review.window_max` values are used when configured,
 with the previous percentile fallback available when either bound is absent.
 
-Automatic candidate selection is performed once per subject and study date,
-even when that date contains multiple `StudyInstanceUID` values. Include and
+Automatic candidate selection is performed once per patient and study date,
+even when that date contains multiple `StudyInstanceUID` values. The folder
+name is never used to combine patients. Include and
 exclude terms are matched against the combined `series_description`,
 `study_description`, and `body_part_examined` text, so anatomy recorded only
 at the study level still affects eligibility. A candidate must be CT, have

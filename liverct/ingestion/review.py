@@ -209,14 +209,15 @@ def _ensure_review_columns(frame):
         frame["patient_id"] = ""
     if "study_group_key" not in frame:
         frame["study_group_key"] = frame.apply(
-            lambda row: "|".join((str(row.get("subject_folder", "")), str(row.get("study_instance_uid", "") or row.get("study_date", "")))),
+            lambda row: "|".join((str(row.get("patient_id", "")), str(row.get("study_instance_uid", "") or row.get("study_date", "")))),
             axis=1,
         )
-    if "scan_group_key" not in frame:
-        frame["scan_group_key"] = frame.apply(
-            lambda row: "|".join((str(row.get("subject_folder", "")), str(row.get("study_date", "")))),
-            axis=1,
-        )
+    # Always recompute this key so stale scored inventories cannot merge
+    # different patients that share a folder name and study date.
+    frame["scan_group_key"] = frame.apply(
+        lambda row: "|".join((str(row.get("patient_id", "")), str(row.get("study_date", "")))),
+        axis=1,
+    )
     if "recommendation" not in frame:
         frame["recommendation"] = "REJECT"
         for study_key, indexes in frame.groupby("scan_group_key", sort=False).groups.items():

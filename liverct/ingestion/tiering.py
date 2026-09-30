@@ -98,14 +98,14 @@ def score_inventory(input_path: Path, output_path: Optional[Path] = None, config
 
 
 def _study_group_key(row) -> str:
-    subject = str(row.get("subject_folder", ""))
+    patient = str(row.get("patient_id", ""))
     study_uid = str(row.get("study_instance_uid", ""))
     study_date = str(row.get("study_date", ""))
-    return "|".join((subject, study_uid or study_date))
+    return "|".join((patient, study_uid or study_date))
 
 
 def _scan_group_key(row) -> str:
-    return "|".join((str(row.get("subject_folder", "")), str(row.get("study_date", ""))))
+    return "|".join((str(row.get("patient_id", "")), str(row.get("study_date", ""))))
 
 
 def _candidate_score(row) -> int:

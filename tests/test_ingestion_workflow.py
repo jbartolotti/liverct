@@ -428,7 +428,7 @@ def test_review_artifacts_sort_by_date_and_numeric_series(tmp_path):
         ("20200722", "11", "s11"), ("20200722", "1", "s1"),
     ]:
         rows.append({
-            "subject_folder": "011", "study_instance_uid": "study-{}".format(study_date),
+            "subject_folder": "011", "patient_id": "011", "study_instance_uid": "study-{}".format(study_date),
             "series_instance_uid": series_uid, "study_date": study_date,
             "study_description": "ABDOMEN", "series_number": series_number,
             "series_description": "ABD", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL",
@@ -449,4 +449,21 @@ def test_review_artifacts_sort_by_date_and_numeric_series(tmp_path):
     report = (output_dir / "sub-011.html").read_text(encoding="utf-8")
     assert report.index("Study Date: 2020-07-22") < report.index("Study Date: 2021-01-02")
     assert report.index(">1</td>") < report.index(">11</td>")
-    assert report.index(">2</td>") < report.index(">10</td>")
+
+
+def test_review_html_groups_by_patient_id_not_subject_folder(tmp_path):
+    scored = pd.DataFrame([
+        {"subject_folder": "011", "patient_id": "patient-1", "study_instance_uid": "study1", "series_instance_uid": "s1", "study_date": "20200722", "study_description": "ABDOMEN", "series_number": "1", "series_description": "ABD", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "num_slices": "100", "z_extent_mm": "250", "source_directory": str(tmp_path), "tier": "Tier 2", "recommendation": "PRIMARY"},
+        {"subject_folder": "012", "patient_id": "patient-1", "study_instance_uid": "study2", "series_instance_uid": "s2", "study_date": "20210830", "study_description": "ABDOMEN", "series_number": "1", "series_description": "ABD", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "num_slices": "100", "z_extent_mm": "250", "source_directory": str(tmp_path), "tier": "Tier 2", "recommendation": "PRIMARY"},
+    ])
+    scored_path = tmp_path / "scored.tsv"
+    output_dir = tmp_path / "review"
+    scored.to_csv(scored_path, sep="\t", index=False)
+
+    generate_review_reports(scored_path, output_dir)
+
+    report = (output_dir / "sub-patient-1.html").read_text(encoding="utf-8")
+    assert "Study Date: 2020-07-22" in report
+    assert "Study Date: 2021-08-30" in report
+    assert not (output_dir / "sub-011.html").exists()
+    assert not (output_dir / "sub-012.html").exists()

@@ -31,18 +31,18 @@ def generate_review_reports(scored_inventory: Path, output_dir: Path, config=Non
     _write_review_template(frame, decision_path)
     detailed_review = bool(config.review.get("detailed_review", False))
     montage_rows = []
-    for _, subject_rows in frame.groupby("subject_folder", sort=True, dropna=False):
-        for _, study_rows in subject_rows.groupby("scan_group_key", sort=False, dropna=False):
+    for _, patient_rows in frame.groupby("patient_id", sort=True, dropna=False):
+        for _, study_rows in patient_rows.groupby("scan_group_key", sort=False, dropna=False):
             for _, row in _human_review_rows(_sort_review_rows(study_rows)).iterrows():
                 recommendation = row.get("recommendation", "REJECT")
                 if row.get("series_key", "") and (detailed_review or recommendation in ("PRIMARY", "SECONDARY")):
                     montage_rows.append(row.to_dict())
     montage_paths = _generate_montages(montage_rows, assets, config)
-    subjects = frame.groupby("subject_folder", sort=True, dropna=False)
-    for subject, subject_rows in subjects:
+    patients = frame.groupby("patient_id", sort=True, dropna=False)
+    for patient_id, patient_rows in patients:
         study_sections = []
         thumbnail_count = 0
-        for study_key, study_rows in subject_rows.groupby("scan_group_key", sort=False, dropna=False):
+        for study_key, study_rows in patient_rows.groupby("scan_group_key", sort=False, dropna=False):
             study_rows = _sort_review_rows(study_rows)
             first = study_rows.iloc[0]
             review_rows = _human_review_rows(study_rows)
@@ -67,15 +67,15 @@ def generate_review_reports(scored_inventory: Path, output_dir: Path, config=Non
             study_sections.append("<section><h2>Study Date: {}</h2><p><strong>Study Description:</strong> {}</p><p><strong>Study Instance UID(s):</strong> {}</p><p><strong>Automatic status:</strong> {}</p><table><thead><tr><th>Recommendation</th><th>Series #</th><th>Description</th><th>Image Type</th><th>Num Slices</th><th>Z Extent (mm)</th><th>Slice Thickness</th><th>Montage</th></tr></thead><tbody>{}</tbody></table></section>".format(
                 escape(_display_date(first.get("study_date", ""))), escape(str(first.get("study_description", ""))),
                 escape(study_uids or str(study_key)), escape(scan_status), "".join(series_rows)))
-        patient_ids = sorted(set(str(value) for value in subject_rows.get("patient_id", [] ) if value))
-        report = "<!doctype html><meta charset='utf-8'><title>Subject {0}</title><h1>Subject {0}</h1><dl><dt>Patient ID</dt><dd>{1}</dd><dt>Total Studies</dt><dd>{2}</dd><dt>Study Dates</dt><dd>{3}</dd></dl>{4}".format(
-            escape(str(subject)), escape(", ".join(patient_ids)), len(study_sections),
-            escape(", ".join(sorted(set(_display_date(value) for value in subject_rows["study_date"] if value)))),
+        patient_label = str(patient_id) or "unknown"
+        report = "<!doctype html><meta charset='utf-8'><title>Subject {0}</title><h1>Subject {0}</h1><dl><dt>Patient ID</dt><dd>{0}</dd><dt>Total Studies</dt><dd>{1}</dd><dt>Study Dates</dt><dd>{2}</dd></dl>{3}".format(
+            escape(patient_label), len(study_sections),
+            escape(", ".join(sorted(set(_display_date(value) for value in patient_rows["study_date"] if value)))),
             "\n".join(study_sections) or "<p>No studies.</p>")
-        report_subject = str(subject) if str(subject).startswith("sub-") else "sub-{}".format(subject)
+        report_subject = patient_label if patient_label.startswith("sub-") else "sub-{}".format(patient_label)
         report_path = output_dir / "{}.html".format(_safe_filename(report_subject))
         report_path.write_text(report, encoding="utf-8")
-        logger.info("Wrote %s: %d studies, %d series, %d montages", report_path, len(study_sections), len(subject_rows), thumbnail_count)
+        logger.info("Wrote %s: %d studies, %d series, %d montages", report_path, len(study_sections), len(patient_rows), thumbnail_count)
     logger.info("Review report generation complete: decision file=%s", decision_path)
     return decision_path
 
@@ -203,6 +203,8 @@ def _sort_review_rows(frame):
 
 def _ensure_review_columns(frame):
     """Derive new review fields when reading an older scored inventory."""
+    if "patient_id" not in frame:
+        frame["patient_id"] = ""
     if "study_group_key" not in frame:
         frame["study_group_key"] = frame.apply(
             lambda row: "|".join((str(row.get("subject_folder", "")), str(row.get("study_instance_uid", "") or row.get("study_date", "")))),

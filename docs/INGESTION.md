@@ -65,9 +65,18 @@ at the study level still affects eligibility. A candidate must be CT, have
 sufficient z coverage and slice count, and not be a scout/localizer, derived
 reconstruction, screenshot, volume rendering, MIP/MPR, or sagittal/coronal
 only series. `ORIGINAL`, `PRIMARY`, `AXIAL`, and abdomen terms are scoring
-evidence, not hard requirements. The scorer adds geometry and reconstruction
-explainability fields including `phase_type`, `coverage_score`, `fov_score`,
-`kernel_score`, `phase_score`, `thickness_score`, `organ_focus_penalty`, and
+evidence, not hard requirements. Standard soft-tissue reconstructions are
+preferred over bone or sharp kernels, 3-5 mm reconstructions are preferred
+over thin reconstructions, and venous/portal phases are preferred over
+arterial and delayed phases. Full-coverage torso series receive the strongest
+coverage weight. Spine-only studies are excluded, while SPECT/PET/attenuation
+and fusion CT descriptions receive a configurable penalty. Reconstructions
+with matching study UID and near-identical z extent are treated as duplicate
+variants and automatically resolved by the same ranking rules.
+
+The scorer writes explicit explainability fields including `kernel_class`,
+`phase_type`, `anatomy_class`, `thickness_score`, `kernel_score`,
+`phase_score`, `coverage_score`, `fov_score`, `nuclear_penalty`, and
 `candidate_score`, along with `candidate_rank`, `candidate_status`,
 `is_auto_primary`, and `candidate_reason`.
 

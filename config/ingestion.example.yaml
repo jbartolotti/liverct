@@ -48,6 +48,11 @@ tiering:
     - NECK
     - C-SPINE
     - CERVICAL
+    - T SPINE
+    - THORACIC SPINE
+    - L SPINE
+    - LUMBAR SPINE
+    - SPINAL
     - SINUS
     - FACIAL
     - MAXILLOFACIAL
@@ -87,9 +92,11 @@ tiering:
     - CURVED
     - OBLIQUE
   coverage_score_thresholds:
+    700: 90
+    600: 75
     500: 60
-    400: 40
-    300: 20
+    400: 50
+    300: 40
     200: 10
   fov_score_thresholds:
     350: 40
@@ -111,10 +118,12 @@ tiering:
       - VENOUS
       - PORTAL VENOUS
     noncontrast:
-      - PRE
       - NONCONTRAST
       - NON-CONTRAST
+    pre:
+      - PRE
       - PRE-CONTRAST
+      - PRECONTRAST
     arterial:
       - ARTERIAL
     delayed:
@@ -137,6 +146,14 @@ tiering:
     - DETAIL
     - B70
     - B80
+  nuclear_penalty_terms:
+    - SPECT
+    - PET
+    - ATTENUATION
+    - BREMSSTRAHLUNG
+    - FUSION
+  nuclear_penalty: 40
+  duplicate_z_tolerance_mm: 10
   auto_min_score: 60
   auto_min_margin: 10
 

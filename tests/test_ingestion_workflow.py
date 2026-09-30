@@ -158,6 +158,47 @@ def test_scoring_uses_study_description_for_anatomy_exclusion(tmp_path):
     assert row["recommendation"] == "REJECT"
 
 
+def test_scoring_prefers_standard_reconstruction_and_exposes_components(tmp_path):
+    inventory = pd.DataFrame([
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "standard", "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "series_description": "PE CHEST ABDOMEN PELVIS STANDARD VENOUS", "study_description": "ABDOMEN", "z_extent_mm": "650", "num_slices": "130", "reconstruction_diameter": "400", "convolution_kernel": "B30", "slice_thickness": "5"},
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "thin", "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "series_description": "PE CHEST ABDOMEN PELVIS VENOUS", "study_description": "ABDOMEN", "z_extent_mm": "650", "num_slices": "520", "reconstruction_diameter": "400", "convolution_kernel": "B31", "slice_thickness": "1"},
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "bone", "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "series_description": "PE CHEST ABDOMEN PELVIS BONE DELAYED", "study_description": "ABDOMEN", "z_extent_mm": "650", "num_slices": "520", "reconstruction_diameter": "400", "convolution_kernel": "B70", "slice_thickness": "1"},
+        {"subject_folder": "011", "study_instance_uid": "study2", "series_instance_uid": "spect", "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "series_description": "SPECT ATTENUATION CT", "study_description": "ABDOMEN", "z_extent_mm": "650", "num_slices": "130", "reconstruction_diameter": "400", "convolution_kernel": "B30", "slice_thickness": "5"},
+    ])
+    source = tmp_path / "inventory.tsv"
+    inventory.to_csv(source, sep="\t", index=False)
+
+    scored = score_inventory(source)
+
+    standard = scored.loc[scored["series_instance_uid"] == "standard"].iloc[0]
+    thin = scored.loc[scored["series_instance_uid"] == "thin"].iloc[0]
+    bone = scored.loc[scored["series_instance_uid"] == "bone"].iloc[0]
+    spect = scored.loc[scored["series_instance_uid"] == "spect"].iloc[0]
+    assert standard["recommendation"] == "PRIMARY"
+    assert standard["candidate_status"] == "AUTO_PRIMARY"
+    assert standard["thickness_score"] == 20
+    assert thin["thickness_score"] == 0
+    assert bone["kernel_score"] == -50
+    assert bone["recommendation"] == "SECONDARY"
+    assert spect["nuclear_penalty"] == -40
+    assert {"kernel_class", "phase_type", "anatomy_class", "thickness_score", "kernel_score", "phase_score", "coverage_score", "fov_score", "candidate_score"}.issubset(scored.columns)
+
+
+def test_scoring_excludes_spine_only_studies(tmp_path):
+    inventory = pd.DataFrame([{
+        "subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "spine", "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "series_description": "T SPINE", "study_description": "THORACIC SPINE", "z_extent_mm": "400", "num_slices": "100",
+    }])
+    source = tmp_path / "inventory.tsv"
+    inventory.to_csv(source, sep="\t", index=False)
+
+    scored = score_inventory(source)
+
+    row = scored.iloc[0]
+    assert row["anatomy_class"] == "non_torso"
+    assert row["automatic_candidate"] == 0
+    assert row["candidate_status"] == "NO_CANDIDATE"
+
+
 def test_scoring_auto_approves_single_candidate_below_score_threshold(tmp_path):
     inventory = pd.DataFrame([{
         "subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "only",
@@ -194,7 +235,7 @@ def test_scoring_prefers_geometry_without_naming_conventions(tmp_path):
     assert row["recommendation"] == "PRIMARY"
     assert row["coverage_score"] == 60
     assert row["fov_score"] == 40
-    assert row["kernel_score"] == 20
+    assert row["kernel_score"] == 25
     assert row["is_soft_kernel"] == 1
     assert row["candidate_score"] > scored.loc[scored["series_instance_uid"] == "bone", "candidate_score"].iloc[0]
 

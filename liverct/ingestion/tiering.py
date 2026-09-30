@@ -24,6 +24,7 @@ def score_inventory(input_path: Path, output_path: Optional[Path] = None, config
     supporting_abdomen_terms = [str(term).upper() for term in rules.get("supporting_abdomen_terms", [])]
     anatomy_exclude_terms = [str(term).upper() for term in rules.get("anatomy_exclude_terms", [])]
     derived_exclude_terms = [str(term).upper() for term in rules.get("derived_exclude_terms", reject_terms)]
+    nuclear_penalty_terms = [str(term).upper() for term in rules.get("nuclear_penalty_terms", [])]
     logger.info(
         "Scoring rules: required_modality=%s min_z_extent_mm=%s min_num_slices=%s",
         rules.get("required_modality", "CT"),
@@ -50,6 +51,7 @@ def score_inventory(input_path: Path, output_path: Optional[Path] = None, config
     frame["reject_anatomy"] = text.map(lambda value: int(_contains_any(value, anatomy_exclude_terms)))
     frame["reject_derived"] = (image_type + " " + text).map(lambda value: int(_contains_any(value, derived_exclude_terms)))
     frame["reject_description"] = frame["reject_derived"]
+    frame["nuclear_penalty_flag"] = text.map(lambda value: int(_contains_any(value, nuclear_penalty_terms)))
     frame["pass_z_extent"] = (z_extent >= float(rules.get("min_z_extent_mm", 200.0))).fillna(False).astype(int)
     frame["pass_num_slices"] = (num_slices >= int(rules.get("min_num_slices", 50))).fillna(False).astype(int)
     frame["reject_short_series"] = num_slices.isin([1, 2]).astype(int)
@@ -113,7 +115,7 @@ def _candidate_score(row) -> int:
     score_columns = (
         "coverage_score", "fov_score", "kernel_score", "phase_score",
         "thickness_score", "original_score", "primary_score", "axial_score",
-        "abdomen_score", "organ_focus_penalty",
+        "abdomen_score", "organ_focus_penalty", "nuclear_penalty",
     )
     return sum(int(row.get(column, 0)) for column in score_columns)
 
@@ -146,23 +148,32 @@ def _feature_scores(row, rules):
     phase_type = _classify_phase(row, rules)
     coverage_score = _score_z_coverage(row.get("z_extent_mm", ""), rules)
     fov_score = _score_reconstruction_diameter(row.get("reconstruction_diameter", ""), rules)
-    kernel_score = {"soft": 20, "bone": -40, "neutral": 0}[kernel_type]
-    phase_score = {"venous": 15, "noncontrast": 10, "arterial": 0, "delayed": -10, "unknown": 0}[phase_type]
+    kernel_score = {"soft": 25, "bone": -50, "neutral": 0}[kernel_type]
+    phase_score = {"venous": 30, "noncontrast": 20, "pre": 15, "arterial": 5, "delayed": -30, "unknown": 0}[phase_type]
     thickness = _number(row.get("slice_thickness", ""))
-    thickness_score = 10 if thickness is not None and 3 <= thickness <= 7 else 5 if thickness is not None and 1 <= thickness < 3 else 0
+    thickness_score = (
+        20 if thickness is not None and 3 <= thickness <= 5 else
+        10 if thickness is not None and 2 <= thickness < 3 else
+        0 if thickness is not None and 1 <= thickness < 2 else
+        -10 if thickness is not None and thickness < 1 else 0
+    )
     image_type = str(row.get("image_type", "")).upper()
     original_score = 20 if _contains_any(image_type, ("ORIGINAL",)) else 0
     primary_score = 15 if _contains_any(image_type, ("PRIMARY",)) else 0
     axial_score = 10 if _contains_any(image_type, ("AXIAL",)) else 0
     abdomen_score = 10 if _contains_any(text, rules.get("strong_abdomen_terms", [])) else 5 if _contains_any(text, rules.get("supporting_abdomen_terms", [])) else 0
     organ_focus_penalty = -int(rules.get("organ_focus_penalty", 15)) if _has_organ_focus(text, rules) else 0
+    nuclear_penalty = -int(rules.get("nuclear_penalty", 40)) if _contains_any(text, rules.get("nuclear_penalty_terms", [])) else 0
+    anatomy_class = _classify_anatomy(row, rules)
     return {
-        "phase_type": phase_type, "is_soft_kernel": int(kernel_type == "soft"),
+        "kernel_class": kernel_type, "phase_type": phase_type, "anatomy_class": anatomy_class,
+        "is_soft_kernel": int(kernel_type == "soft"),
         "is_bone_kernel": int(kernel_type == "bone"), "is_large_fov": int(fov_score > 0),
         "organ_focus_penalty": organ_focus_penalty, "coverage_score": coverage_score,
         "fov_score": fov_score, "kernel_score": kernel_score, "phase_score": phase_score,
         "thickness_score": thickness_score, "original_score": original_score,
         "primary_score": primary_score, "axial_score": axial_score, "abdomen_score": abdomen_score,
+        "nuclear_penalty": nuclear_penalty,
     }
 
 
@@ -183,8 +194,10 @@ def _classify_phase(row, rules=None):
         return "venous"
     if _contains_any(value, phase_terms.get("delayed", ("DELAYED", "DELAY"))):
         return "delayed"
-    if _contains_any(value, phase_terms.get("noncontrast", ("NONCONTRAST", "NON-CONTRAST", "PRE-CONTRAST", "PRECONTRAST", "PRE"))):
+    if _contains_any(value, phase_terms.get("noncontrast", ("NONCONTRAST", "NON-CONTRAST"))):
         return "noncontrast"
+    if _contains_any(value, phase_terms.get("pre", ("PRE", "PRE-CONTRAST", "PRECONTRAST"))):
+        return "pre"
     if _contains_any(value, phase_terms.get("arterial", ("ARTERIAL", "ART"))):
         return "arterial"
     return "unknown"
@@ -215,11 +228,34 @@ def _has_organ_focus(text, rules):
     return _contains_any(text, rules.get("organ_focus_terms", ("LIVER", "HEPATIC", "RENAL", "KIDNEY", "PANCREAS", "ADRENAL", "AORTA", "CTA")))
 
 
+def _classify_anatomy(row, rules=None):
+    text = " ".join(str(row.get(column, "")) for column in ("series_description", "study_description", "body_part_examined")).upper()
+    if _contains_any(text, (rules or {}).get("anatomy_exclude_terms", ())):
+        return "non_torso"
+    if _contains_any(text, (rules or {}).get("strong_abdomen_terms", ())):
+        return "torso"
+    if _contains_any(text, (rules or {}).get("supporting_abdomen_terms", ())):
+        return "torso"
+    return "unknown"
+
+
 def _number(value):
     try:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _same_acquisition(best, other, rules):
+    """Identify reconstruction variants of the same scan for automatic tie-breaking."""
+    if str(best.get("study_instance_uid", "")) != str(other.get("study_instance_uid", "")):
+        return False
+    best_extent = _number(best.get("z_extent_mm", ""))
+    other_extent = _number(other.get("z_extent_mm", ""))
+    if best_extent is None or other_extent is None:
+        return False
+    tolerance = float(rules.get("duplicate_z_tolerance_mm", 10.0))
+    return abs(best_extent - other_extent) <= tolerance
 
 
 def _recommendations(frame, rules):
@@ -236,9 +272,11 @@ def _recommendations(frame, rules):
         eligible = scan_rows[scan_rows["automatic_candidate"] == 1].copy()
         eligible["_series_number_sort"] = pd.to_numeric(eligible.get("series_number", pd.Series("", index=eligible.index)), errors="coerce")
         eligible["_series_uid_sort"] = eligible.get("series_instance_uid", pd.Series("", index=eligible.index)).astype(str)
+        eligible["_reconstruction_diameter_sort"] = pd.to_numeric(
+            eligible.get("reconstruction_diameter", pd.Series("", index=eligible.index)), errors="coerce")
         eligible = eligible.sort_values(
-            ["candidate_score", "z_extent_mm", "num_slices", "_series_number_sort", "_series_uid_sort"],
-            ascending=[False, False, False, True, True], na_position="last", kind="mergesort")
+            ["candidate_score", "z_extent_mm", "num_slices", "_reconstruction_diameter_sort", "_series_number_sort", "_series_uid_sort"],
+            ascending=[False, False, False, False, True, True], na_position="last", kind="mergesort")
         if eligible.empty:
             continue
         best = eligible.iloc[0]
@@ -246,8 +284,12 @@ def _recommendations(frame, rules):
         score = int(best["candidate_score"])
         single_candidate = len(eligible) == 1
         clear_margin = score - second_score >= min_margin
-        status = "AUTO_PRIMARY" if single_candidate or (score >= min_score and clear_margin) else "REVIEW_REQUIRED"
+        duplicate_reconstructions = len(eligible) > 1 and all(
+            _same_acquisition(best, row, rules) for _, row in eligible.iloc[1:].iterrows())
+        status = "AUTO_PRIMARY" if single_candidate or duplicate_reconstructions or (score >= min_score and clear_margin) else "REVIEW_REQUIRED"
         reason = "only strict abdominal axial candidate" if single_candidate else "best strict abdominal axial candidate"
+        if duplicate_reconstructions:
+            reason = "best standard reconstruction among duplicate acquisition series"
         if status == "REVIEW_REQUIRED":
             reason = "candidate score or separation from runner-up is below automatic threshold"
         for index in scan_rows.index:

@@ -406,6 +406,25 @@ def test_review_template_is_compact_by_scan_date(tmp_path):
     assert review.empty
 
 
+def test_review_html_handles_automatic_scan_without_review_rows(tmp_path):
+    scored = pd.DataFrame([{
+        "subject_folder": "011", "patient_id": "patient-1", "study_instance_uid": "study1",
+        "series_instance_uid": "primary", "study_date": "20200722", "series_number": "1",
+        "series_description": "ABD", "study_description": "ABDOMEN", "image_type": "ORIGINAL\\PRIMARY\\AXIAL",
+        "num_slices": "100", "z_extent_mm": "500", "recommendation": "PRIMARY",
+        "candidate_status": "AUTO_PRIMARY", "automatic_candidate": "0", "is_auto_primary": "0",
+        "candidate_reason": "only strict abdominal axial candidate", "source_directory": str(tmp_path),
+    }])
+    scored_path = tmp_path / "scored.tsv"
+    output_dir = tmp_path / "review"
+    scored.to_csv(scored_path, sep="\t", index=False)
+
+    generate_review_reports(scored_path, output_dir)
+
+    report = (output_dir / "sub-patient-1.html").read_text(encoding="utf-8")
+    assert "only strict abdominal axial candidate" in report
+
+
 def test_review_template_contains_only_ambiguous_candidates(tmp_path):
     scored = pd.DataFrame([
         {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "a", "study_date": "20200722", "series_number": "1", "series_description": "ABD", "study_description": "ABDOMEN", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "num_slices": "100", "z_extent_mm": "300", "recommendation": "PRIMARY", "candidate_status": "REVIEW_REQUIRED", "automatic_candidate": "1", "candidate_score": "80", "source_directory": str(tmp_path)},

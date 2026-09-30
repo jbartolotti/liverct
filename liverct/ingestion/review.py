@@ -63,7 +63,9 @@ def generate_review_reports(scored_inventory: Path, output_dir: Path, config=Non
             study_uids = ", ".join(sorted(set(str(value) for value in study_rows["study_instance_uid"] if value)))
             scan_status = ", ".join(sorted(set(str(value) for value in study_rows["candidate_status"] if value)))
             if not series_rows:
-                series_rows.append("<tr><td colspan='8'>{}</td></tr>".format(escape(str(review_rows.iloc[0].get("candidate_reason", "No candidate sequence available")))))
+                status_row = review_rows.iloc[0] if not review_rows.empty else study_rows.iloc[0]
+                reason = status_row.get("candidate_reason", "") or "No candidate sequence available"
+                series_rows.append("<tr><td colspan='8'>{}</td></tr>".format(escape(str(reason))))
             study_sections.append("<section><h2>Study Date: {}</h2><p><strong>Study Description:</strong> {}</p><p><strong>Study Instance UID(s):</strong> {}</p><p><strong>Automatic status:</strong> {}</p><table><thead><tr><th>Recommendation</th><th>Series #</th><th>Description</th><th>Image Type</th><th>Num Slices</th><th>Z Extent (mm)</th><th>Slice Thickness</th><th>Montage</th></tr></thead><tbody>{}</tbody></table></section>".format(
                 escape(_display_date(first.get("study_date", ""))), escape(str(first.get("study_description", ""))),
                 escape(study_uids or str(study_key)), escape(scan_status), "".join(series_rows)))

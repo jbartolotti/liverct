@@ -63,8 +63,9 @@ def build_manifest(scored_inventory: Path, review_path: Path, output_path: Path,
         if decision == "PRIMARY":
             selected_primary[study_key] = row["series_key"]
         session_id = _session_id(row, config)
+        patient_id = str(row.get("patient_id", ""))
         selected.append({
-            "subject_id": _subject_id(row), "session_id": session_id,
+            "subject_id": patient_id, "patient_id": patient_id, "session_id": session_id,
             "series_uid": row.get("series_instance_uid", ""),
             "study_instance_uid": row.get("study_instance_uid", ""),
             "series_number": row.get("series_number", ""),

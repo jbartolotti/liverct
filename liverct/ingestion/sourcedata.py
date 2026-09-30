@@ -22,7 +22,9 @@ def stage_sourcedata(manifest_path: Path, archive_root: Path, bids_root: Path, m
     logger.info("Loading manifest for sourcedata staging: %s (%d rows)", manifest_path, len(manifest))
     staged_files = 0
     for _, row in manifest.iterrows():
-        subject = str(row["subject_id"])
+        patient_id = str(row.get("patient_id", ""))
+        if not patient_id:
+            raise ValueError("Manifest row is missing patient_id; refusing to stage into an ambiguous subject directory")
         session = str(row.get("session_id", ""))
         series_uid = str(row["series_uid"])
         source_text = str(row["source_directory"])
@@ -34,14 +36,14 @@ def stage_sourcedata(manifest_path: Path, archive_root: Path, bids_root: Path, m
             if not source_dir.is_absolute():
                 source_dir = archive_root / source_dir
             source_dirs.append(source_dir)
-        destination = sourcedata / "sub-{}".format(subject)
+        destination = sourcedata / "sub-{}".format(patient_id)
         if session:
             destination /= "ses-{}".format(session.replace("ses-", ""))
         destination /= "series-{}".format(_short_uid(series_uid))
         destination.mkdir(parents=True, exist_ok=True)
         logger.info(
-            "Staging subject=%s session=%s series_uid=%s destination=%s mode=%s",
-            subject, session or "<none>", series_uid, destination, mode,
+            "Staging patient=%s session=%s series_uid=%s destination=%s mode=%s",
+            patient_id, session or "<none>", series_uid, destination, mode,
         )
         files = []
         for source_dir in source_dirs:

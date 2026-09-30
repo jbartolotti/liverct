@@ -64,13 +64,15 @@ def test_inventory_and_staging_filter_series_uid(tmp_path):
     series = inventory[inventory["series_instance_uid"] == "series1"].iloc[0]
     manifest = tmp_path / "manifest.tsv"
     pd.DataFrame([{
-        "subject_id": "0119838", "session_id": "20200722", "series_uid": "series1",
+        "subject_id": "folder-subject", "patient_id": "patient-0119838", "session_id": "20200722", "series_uid": "series1",
         "source_directory": series["source_directory"],
     }]).to_csv(manifest, sep="\t", index=False)
 
     sourcedata = stage_sourcedata(manifest, tmp_path, tmp_path / "bids")
     staged = list(sourcedata.rglob("*.dcm"))
     assert len(staged) == 3
+    assert all("sub-patient-0119838" in str(path) for path in staged)
+    assert all("folder-subject" not in str(path) for path in staged)
 
 
 def test_yaml_config_overrides_defaults(tmp_path):

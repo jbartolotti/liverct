@@ -4,7 +4,7 @@ import numpy as np
 from pydicom import Dataset
 
 from liverct.ingestion import build_manifest, inventory_archive, load_config, score_inventory, stage_sourcedata
-from liverct.ingestion.review import _display_pixels, _make_thumbnail, generate_review_reports
+from liverct.ingestion.review import _build_slice_index, _display_pixels, _generate_montages, _make_thumbnail, generate_review_reports
 from liverct.ingestion.tiering import _classify_kernel, _classify_phase, _score_reconstruction_diameter, _score_z_coverage
 
 
@@ -305,6 +305,57 @@ def test_review_montage_uses_fixed_height_and_variable_width(tmp_path):
     assert thumbnail == "review_assets/series1.png"
     assert image.height == 260
     assert image.width == 3 * 240
+
+
+def test_review_reuses_existing_montage_without_dicom_reads(tmp_path, monkeypatch):
+    from liverct.ingestion.config import IngestionConfig
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    expected = assets / "series1.png"
+    expected.write_bytes(b"cached")
+    row = {"source_directory": str(tmp_path / "missing"), "series_instance_uid": "series1"}
+    monkeypatch.setattr("liverct.ingestion.review._build_slice_index", lambda pending: (_ for _ in ()).throw(AssertionError("cache miss")))
+
+    result = _generate_montages([row], assets, IngestionConfig())
+
+    assert result["||series1"] == "review_assets/series1.png"
+
+
+def test_review_slice_index_reads_metadata_without_pixels(tmp_path, monkeypatch):
+    archive = tmp_path / "series"
+    archive.mkdir()
+    _write_dicom(archive / "image1.dcm", "series1", 1)
+    calls = []
+    import pydicom
+    original_read = pydicom.dcmread
+
+    def tracked_read(*args, **kwargs):
+        calls.append(kwargs.get("stop_before_pixels"))
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(pydicom, "dcmread", tracked_read)
+    row = {"source_directory": str(archive), "series_instance_uid": "series1"}
+    index = _build_slice_index([("||series1", row, "", "")])
+
+    assert index["||series1"]
+    assert calls == [True]
+
+
+def test_review_montage_generation_supports_process_workers(tmp_path):
+    archive = tmp_path / "series"
+    archive.mkdir()
+    for index in range(1, 4):
+        _write_dicom(archive / "image{}.dcm".format(index), "series1", index)
+    from liverct.ingestion.config import IngestionConfig
+    config = IngestionConfig()
+    config.values["review"]["montage_workers"] = 2
+    row = {"source_directory": str(archive), "series_instance_uid": "series1"}
+
+    result = _generate_montages([row], tmp_path / "assets", config)
+
+    assert result["||series1"] == "review_assets/series1.png"
+    assert (tmp_path / "assets" / "series1.png").exists()
 
 
 def test_review_template_prepopulates_candidates_and_preserves_decisions(tmp_path):

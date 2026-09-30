@@ -50,6 +50,13 @@ blank metadata fields to make the file easier to scan and filter.
 The `review_row_type` column identifies `SERIES`, `STATUS`, and `SEPARATOR`
 rows.
 
+Review montage generation uses metadata-only DICOM reads while indexing slice
+locations, decodes only the selected evenly spaced slices, and reuses an
+existing PNG when its expected path is already present. `review.montage_workers`
+defaults to `1`; larger values enable process-based montage generation. Fixed
+`review.window_min` and `review.window_max` values are used when configured,
+with the previous percentile fallback available when either bound is absent.
+
 Automatic candidate selection is performed once per subject and study date,
 even when that date contains multiple `StudyInstanceUID` values. Include and
 exclude terms are matched against the combined `series_description`,

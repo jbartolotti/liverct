@@ -1,10 +1,12 @@
 """Study-centric image-based review reports."""
 
 from datetime import datetime, timezone
+from concurrent.futures import ProcessPoolExecutor
 from html import escape
 import logging
 from pathlib import Path
 import re
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,14 @@ def generate_review_reports(scored_inventory: Path, output_dir: Path, config=Non
     decision_path = output_dir / "review.tsv"
     _write_review_template(frame, decision_path)
     detailed_review = bool(config.review.get("detailed_review", False))
+    montage_rows = []
+    for _, subject_rows in frame.groupby("subject_folder", sort=True, dropna=False):
+        for _, study_rows in subject_rows.groupby("scan_group_key", sort=False, dropna=False):
+            for _, row in _human_review_rows(_sort_review_rows(study_rows)).iterrows():
+                recommendation = row.get("recommendation", "REJECT")
+                if row.get("series_key", "") and (detailed_review or recommendation in ("PRIMARY", "SECONDARY")):
+                    montage_rows.append(row.to_dict())
+    montage_paths = _generate_montages(montage_rows, assets, config)
     subjects = frame.groupby("subject_folder", sort=True, dropna=False)
     for subject, subject_rows in subjects:
         study_sections = []
@@ -41,8 +51,7 @@ def generate_review_reports(scored_inventory: Path, output_dir: Path, config=Non
                 recommendation = row.get("recommendation", "REJECT")
                 if not row.get("series_key", ""):
                     continue
-                should_render = detailed_review or recommendation in ("PRIMARY", "SECONDARY")
-                thumbnail = _make_thumbnail(row, assets, config) if should_render else ""
+                thumbnail = montage_paths.get(_series_key(row), "")
                 if thumbnail:
                     thumbnail_count += 1
                 image_html = "<img src='{}' alt='Representative slice' height='260'>".format(escape(thumbnail)) if thumbnail else ""
@@ -241,43 +250,117 @@ def _series_key(row) -> str:
     return "|".join((str(row.get("subject_folder", "")), str(row.get("study_instance_uid", "")), str(row.get("series_instance_uid", ""))))
 
 
-def _make_thumbnail(row, assets: Path, config) -> str:
+def _generate_montages(rows, assets: Path, config):
+    """Build required montages from one metadata index, reusing cached PNGs."""
+    started = time.perf_counter()
+    assets.mkdir(parents=True, exist_ok=True)
+    pending = []
+    results = {}
+    for row in rows:
+        key = _series_key(row)
+        relative_path, montage_file = _montage_paths(row, assets)
+        if montage_file.exists():
+            results[key] = relative_path
+            logger.info("Reusing existing montage: %s", montage_file)
+            continue
+        pending.append((key, row, relative_path, montage_file))
+
+    if pending:
+        index = _build_slice_index(pending)
+        review_values = _review_values(config)
+        workers = max(1, int(review_values.get("montage_workers", 1)))
+        tasks = []
+        for key, row, relative_path, montage_file in pending:
+            tasks.append((row, assets, review_values, index.get(key, [])))
+        logger.info("Generating %d review montages with %d worker(s)", len(tasks), workers)
+        if workers > 1:
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                generated = list(executor.map(_make_thumbnail_worker, tasks))
+        else:
+            generated = [_make_thumbnail_worker(task) for task in tasks]
+        for (key, _, relative_path, _), generated_path in zip(pending, generated):
+            if generated_path:
+                results[key] = generated_path
+            else:
+                logger.warning("Montage generation failed or found no readable slices: series_key=%s", key)
+    logger.info("Montage build completed in %.2f seconds (workers=%d, requested=%d, reused=%d)", time.perf_counter() - started, max(1, int(_review_values(config).get("montage_workers", 1))), len(rows), len(rows) - len(pending))
+    return results
+
+
+def _make_thumbnail_worker(task):
+    row, assets, review_values, slices = task
+    return _make_thumbnail(row, Path(assets), review_values, slices=slices)
+
+
+def _build_slice_index(pending):
+    """Index series slice metadata once per source directory without pixels."""
+    import pydicom
+
+    source_dirs = sorted({str(source_dir) for _, row, _, _ in pending for source_dir in _source_dirs(row)})
+    index = {}
+    for source_dir in source_dirs:
+        for file_path in Path(source_dir).rglob("*"):
+            if not file_path.is_file():
+                continue
+            try:
+                dataset = pydicom.dcmread(str(file_path), stop_before_pixels=True, force=True)
+                series_uid = str(dataset.get("SeriesInstanceUID", ""))
+                if not series_uid:
+                    continue
+                z_position = _slice_position(dataset)
+                if z_position is None:
+                    continue
+                rows = int(dataset.get("Rows", 1))
+                columns = int(dataset.get("Columns", 1))
+            except Exception:
+                continue
+            index.setdefault(series_uid, []).append((z_position, str(file_path), rows, columns))
+    for slices in index.values():
+        slices.sort(key=lambda item: (item[0], item[1]))
+    return {key: [item for item in index.get(str(row.get("series_instance_uid", "")), []) if Path(item[1]).parent in _source_dirs(row)] for key, row, _, _ in pending}
+
+
+def _source_dirs(row):
+    return [Path(item) for item in str(row.get("source_directory", "")).split(";") if item]
+
+
+def _slice_position(dataset):
+    try:
+        return float(dataset.ImagePositionPatient[2])
+    except (AttributeError, IndexError, TypeError, ValueError):
+        try:
+            return float(dataset.get("InstanceNumber", ""))
+        except (TypeError, ValueError):
+            return None
+
+
+def _montage_paths(row, assets):
+    name = "{}.png".format(str(row.get("series_instance_uid", "unknown")).replace(".", "_"))
+    montage_file = assets / name
+    return "review_assets/{}".format(name), montage_file
+
+
+def _review_values(config):
+    return dict(config.review) if hasattr(config, "review") else dict(config)
+
+
+def _make_thumbnail(row, assets: Path, config, slices=None) -> str:
     try:
         import numpy as np
         import pydicom
         from PIL import Image, ImageDraw
 
         assets.mkdir(parents=True, exist_ok=True)
-        source_dirs = [Path(item) for item in str(row.get("source_directory", "")).split(";") if item]
         series_uid = str(row.get("series_instance_uid", ""))
-        # Keep only paths during discovery. Holding decoded DICOM datasets for
-        # every candidate slice can retain substantial metadata and pixel state.
-        slices = []
-        for source_dir in source_dirs:
-            for file_path in source_dir.rglob("*"):
-                if not file_path.is_file():
-                    continue
-                try:
-                    dataset = pydicom.dcmread(str(file_path), force=True)
-                    if str(dataset.get("SeriesInstanceUID", "")) != series_uid or not hasattr(dataset, "pixel_array"):
-                        continue
-                    z_position = float(dataset.ImagePositionPatient[2])
-                except Exception:
-                    continue
-                slices.append((z_position, file_path))
+        if slices is None:
+            slices = _build_slice_index([(series_uid, row, "", "")]).get(series_uid, [])
         if not slices:
             return ""
-        slices.sort(key=lambda item: item[0])
-        count = max(1, int(config.review.get("thumbnail_count", 6)))
+        count = max(1, int(_review_values(config).get("thumbnail_count", 6)))
         selected = [slices[index] for index in np.linspace(0, len(slices) - 1, min(count, len(slices))).astype(int)]
         display_height = 240
-        max_width = max(1, int(config.review.get("max_montage_width", 4096)))
-        estimated_width = 0
-        for _, file_path in selected:
-            dataset = pydicom.dcmread(str(file_path), stop_before_pixels=True, force=True)
-            rows = int(dataset.get("Rows", 1))
-            columns = int(dataset.get("Columns", 1))
-            estimated_width += max(1, round(columns * display_height / rows))
+        max_width = max(1, int(_review_values(config).get("max_montage_width", 4096)))
+        estimated_width = sum(max(1, round(columns * display_height / rows)) for _, _, rows, columns in selected)
         if estimated_width > max_width:
             display_height = max(1, int(display_height * max_width / estimated_width))
             logger.warning(
@@ -285,9 +368,10 @@ def _make_thumbnail(row, assets: Path, config) -> str:
                 series_uid, estimated_width, display_height,
             )
         images = []
-        for z_position, file_path in selected:
+        for z_position, file_path, _, _ in selected:
             dataset = pydicom.dcmread(str(file_path), force=True)
-            pixels = _display_pixels(dataset)
+            values = _review_values(config)
+            pixels = _display_pixels(dataset, values.get("window_min"), values.get("window_max"))
             image = Image.fromarray(pixels).convert("RGB")
             # Keep a consistent image height while preserving each slice's aspect ratio.
             display_width = max(1, round(image.width * display_height / image.height))
@@ -302,15 +386,16 @@ def _make_thumbnail(row, assets: Path, config) -> str:
         for image in images:
             montage.paste(image, (x_offset, 0))
             x_offset += image.width
-        name = "{}.png".format(str(row.get("series_instance_uid", "unknown")).replace(".", "_"))
-        montage.save(assets / name)
-        return "review_assets/{}".format(name)
+        _, montage_file = _montage_paths(row, assets)
+        montage.save(montage_file)
+        logger.info("Generated montage: %s", montage_file)
+        return _montage_paths(row, assets)[0]
     except Exception:
         logger.exception("Failed to generate review montage for series_uid=%s", row.get("series_instance_uid", ""))
         return ""
 
 
-def _display_pixels(dataset):
+def _display_pixels(dataset, window_min=None, window_max=None):
     """Convert a DICOM slice into an anatomy-focused 8-bit review image."""
     import numpy as np
 
@@ -320,6 +405,15 @@ def _display_pixels(dataset):
     slope = _dicom_number(dataset, "RescaleSlope", default=1.0)
     intercept = _dicom_number(dataset, "RescaleIntercept", default=0.0)
     hu_pixels = stored_pixels * slope + intercept
+
+    if window_min is not None and window_max is not None:
+        try:
+            lower = float(window_min)
+            upper = float(window_max)
+        except (TypeError, ValueError):
+            lower, upper = None, None
+        if lower is not None and upper is not None and upper > lower:
+            return ((np.clip(hu_pixels, lower, upper) - lower) / (upper - lower) * 255.0).clip(0, 255).astype("uint8")
 
     center = _dicom_number(dataset, "WindowCenter")
     width = _dicom_number(dataset, "WindowWidth")

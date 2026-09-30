@@ -32,7 +32,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "auto_min_margin": 10,
         "required_modality": "CT",
     },
-    "review": {"thumbnail_count": 6, "window_min": -200, "window_max": 300, "max_montage_width": 4096, "detailed_review": False},
+    "review": {"thumbnail_count": 6, "window_min": -200, "window_max": 300, "max_montage_width": 4096, "montage_workers": 1, "detailed_review": False},
     "staging": {"mode": "copy"},
 }
 

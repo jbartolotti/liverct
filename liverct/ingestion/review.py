@@ -83,6 +83,7 @@ def _write_review_template(frame, decision_path: Path) -> None:
     ]
     review_columns = ["reviewer_decision", "notes"]
     candidates = pd.concat([_human_review_rows(group) for _, group in frame.groupby("scan_group_key", sort=False, dropna=False)], ignore_index=True)
+    candidates = candidates[candidates["candidate_status"] == "REVIEW_REQUIRED"].copy()
     candidates["is_data"] = "1"
     candidates["is_data"] = candidates["series_key"].ne("").astype(int)
     candidates["subject_id"] = candidates["subject_folder"].str.replace(r"^sub-", "", regex=True)

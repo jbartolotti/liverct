@@ -5,6 +5,7 @@ from pydicom import Dataset
 
 from liverct.ingestion import build_manifest, inventory_archive, load_config, score_inventory, stage_sourcedata
 from liverct.ingestion.review import _display_pixels, _make_thumbnail, generate_review_reports
+from liverct.ingestion.tiering import _classify_kernel, _classify_phase, _score_reconstruction_diameter, _score_z_coverage
 
 
 def _write_dicom(path, series_uid, instance_number, study_date="20200722"):
@@ -106,7 +107,7 @@ def test_scoring_recommends_one_primary_per_study(tmp_path):
     source = tmp_path / "inventory.tsv"
     inventory.to_csv(source, sep="\t", index=False)
     scored = score_inventory(source)
-    assert list(scored["recommendation"]) == ["PRIMARY", "REJECT", "REJECT"]
+    assert list(scored["recommendation"]) == ["PRIMARY", "SECONDARY", "REJECT"]
     assert scored.loc[0, "study_group_key"] == "011|study1"
 
 
@@ -176,6 +177,37 @@ def test_scoring_auto_approves_single_candidate_below_score_threshold(tmp_path):
     assert row["candidate_status"] == "AUTO_PRIMARY"
     assert row["recommendation"] == "PRIMARY"
     assert row["is_auto_primary"] == 1
+
+
+def test_scoring_prefers_geometry_without_naming_conventions(tmp_path):
+    inventory = pd.DataFrame([
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "vendor", "study_date": "20200722", "modality": "CT", "image_type": "", "series_description": "ROUTINE", "study_description": "", "z_extent_mm": "500", "num_slices": "100", "reconstruction_diameter": "400", "convolution_kernel": "B30", "slice_thickness": "5"},
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "bone", "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "series_description": "BONE", "study_description": "", "z_extent_mm": "450", "num_slices": "100", "reconstruction_diameter": "400", "convolution_kernel": "B70", "slice_thickness": "1"},
+    ])
+    source = tmp_path / "inventory.tsv"
+    inventory.to_csv(source, sep="\t", index=False)
+
+    scored = score_inventory(source)
+
+    row = scored.loc[scored["series_instance_uid"] == "vendor"].iloc[0]
+    assert row["automatic_candidate"] == 1
+    assert row["recommendation"] == "PRIMARY"
+    assert row["coverage_score"] == 60
+    assert row["fov_score"] == 40
+    assert row["kernel_score"] == 20
+    assert row["is_soft_kernel"] == 1
+    assert row["candidate_score"] > scored.loc[scored["series_instance_uid"] == "bone", "candidate_score"].iloc[0]
+
+
+def test_scoring_feature_helpers_are_explainable():
+    assert _score_z_coverage("500") == 60
+    assert _score_z_coverage("250") == 10
+    assert _score_reconstruction_diameter("400") == 40
+    assert _score_reconstruction_diameter("200") == -20
+    assert _classify_kernel({"convolution_kernel": "B31", "series_description": "routine"}) == "soft"
+    assert _classify_kernel({"convolution_kernel": "B70", "series_description": "routine"}) == "bone"
+    assert _classify_phase({"series_description": "portal venous", "study_description": ""}) == "venous"
+    assert _classify_phase({"series_description": "5 min delayed", "study_description": ""}) == "delayed"
 
 
 def test_manifest_includes_secondary_only_when_requested(tmp_path):
@@ -320,9 +352,22 @@ def test_review_template_is_compact_by_scan_date(tmp_path):
     scored_path = tmp_path / "scored.tsv"
     scored.to_csv(scored_path, sep="\t", index=False)
     review = pd.read_csv(generate_review_reports(scored_path, tmp_path / "review"), sep="\t", dtype=str, keep_default_na=False)
-    assert list(review.loc[review["is_data"] == "1", "series_instance_uid"]) == ["primary"]
-    assert set(review.loc[review["is_data"] == "0", "review_row_type"]) == {"SEPARATOR", "STATUS"}
-    assert len(review) == 3
+    assert review.empty
+
+
+def test_review_template_contains_only_ambiguous_candidates(tmp_path):
+    scored = pd.DataFrame([
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "a", "study_date": "20200722", "series_number": "1", "series_description": "ABD", "study_description": "ABDOMEN", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "num_slices": "100", "z_extent_mm": "300", "recommendation": "PRIMARY", "candidate_status": "REVIEW_REQUIRED", "automatic_candidate": "1", "candidate_score": "80", "source_directory": str(tmp_path)},
+        {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "b", "study_date": "20200722", "series_number": "2", "series_description": "VENOUS", "study_description": "ABDOMEN", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "num_slices": "100", "z_extent_mm": "300", "recommendation": "SECONDARY", "candidate_status": "REVIEW_REQUIRED", "automatic_candidate": "1", "candidate_score": "78", "source_directory": str(tmp_path)},
+        {"subject_folder": "011", "study_instance_uid": "study2", "series_instance_uid": "auto", "study_date": "20210830", "series_number": "1", "series_description": "ABD", "study_description": "ABDOMEN", "image_type": "ORIGINAL\\PRIMARY\\AXIAL", "num_slices": "100", "z_extent_mm": "500", "recommendation": "PRIMARY", "candidate_status": "AUTO_PRIMARY", "automatic_candidate": "1", "is_auto_primary": "1", "candidate_score": "150", "source_directory": str(tmp_path)},
+    ])
+    scored_path = tmp_path / "scored.tsv"
+    scored.to_csv(scored_path, sep="\t", index=False)
+
+    review = pd.read_csv(generate_review_reports(scored_path, tmp_path / "review"), sep="\t", dtype=str, keep_default_na=False)
+
+    assert list(review.loc[review["is_data"] == "1", "series_instance_uid"]) == ["a", "b"]
+    assert set(review["candidate_status"]) == {"REVIEW_REQUIRED"}
 
 
 def test_review_artifacts_sort_by_date_and_numeric_series(tmp_path):

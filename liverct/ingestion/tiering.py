@@ -74,8 +74,11 @@ def score_inventory(input_path: Path, output_path: Optional[Path] = None, config
     frame["tier_reason"] = reasons
     frame["study_group_key"] = frame.apply(_study_group_key, axis=1)
     frame["scan_group_key"] = frame.apply(_scan_group_key, axis=1)
+    feature_scores = frame.apply(lambda row: _feature_scores(row, rules), axis=1, result_type="expand")
+    for column in feature_scores.columns:
+        frame[column] = feature_scores[column]
+    frame["automatic_candidate"] = frame.apply(lambda row: int(_automatic_candidate(row, rules)), axis=1)
     frame["candidate_score"] = frame.apply(_candidate_score, axis=1)
-    frame["automatic_candidate"] = frame.apply(_automatic_candidate, axis=1).astype(int)
     frame["recommendation"], frame["candidate_status"], frame["candidate_rank"], frame["is_auto_primary"], frame["candidate_reason"] = _recommendations(frame, rules)
     frame["rule_version"] = str(config.values.get("config_version", "1"))
     tier_counts = frame["tier"].value_counts().to_dict()
@@ -104,42 +107,119 @@ def _scan_group_key(row) -> str:
 
 
 def _candidate_score(row) -> int:
-    """Rank strict automatic candidates with an explainable score."""
-    if not _automatic_candidate(row):
+    """Return the explainable geometry/reconstruction score for a candidate."""
+    if int(row.get("automatic_candidate", 0)) != 1:
         return -1
-    score = 0
-    score += int(row.get("pass_original", 0)) * 30
-    score += int(row.get("pass_primary", 0)) * 25
-    score += int(row.get("pass_axial", 0)) * 25
-    score += int(row.get("strong_abdomen_evidence", 0)) * 30
-    score += int(row.get("supporting_abdomen_evidence", 0)) * 10
-    score += int(row.get("pass_z_extent", 0)) * 15
+    score_columns = (
+        "coverage_score", "fov_score", "kernel_score", "phase_score",
+        "thickness_score", "original_score", "primary_score", "axial_score",
+        "abdomen_score", "organ_focus_penalty",
+    )
+    return sum(int(row.get(column, 0)) for column in score_columns)
+
+
+def _automatic_candidate(row, rules=None) -> bool:
+    """Eligibility excludes unusable acquisitions but does not require naming conventions."""
+    min_z_extent = float((rules or {}).get("min_z_extent_mm", 200.0))
+    min_num_slices = int((rules or {}).get("min_num_slices", 50))
     try:
         z_extent = float(row.get("z_extent_mm", ""))
     except (TypeError, ValueError):
         z_extent = 0
-    if z_extent >= 300:
-        score += 10
     try:
         num_slices = float(row.get("num_slices", ""))
     except (TypeError, ValueError):
         num_slices = 0
-    if num_slices >= 100:
-        score += 15
+    return (
+        int(row.get("pass_modality", 0)) == 1
+        and z_extent >= min_z_extent
+        and num_slices >= min_num_slices
+        and int(row.get("reject_anatomy", 0)) == 0
+        and int(row.get("reject_derived", 0)) == 0
+        and int(row.get("reject_short_series", 0)) == 0
+    )
+
+
+def _feature_scores(row, rules):
+    text = " ".join(str(row.get(column, "")) for column in ("series_description", "study_description", "body_part_examined")).upper()
+    kernel_type = _classify_kernel(row, rules)
+    phase_type = _classify_phase(row, rules)
+    coverage_score = _score_z_coverage(row.get("z_extent_mm", ""), rules)
+    fov_score = _score_reconstruction_diameter(row.get("reconstruction_diameter", ""), rules)
+    kernel_score = {"soft": 20, "bone": -40, "neutral": 0}[kernel_type]
+    phase_score = {"venous": 15, "noncontrast": 10, "arterial": 0, "delayed": -10, "unknown": 0}[phase_type]
+    thickness = _number(row.get("slice_thickness", ""))
+    thickness_score = 10 if thickness is not None and 3 <= thickness <= 7 else 5 if thickness is not None and 1 <= thickness < 3 else 0
+    image_type = str(row.get("image_type", "")).upper()
+    original_score = 20 if _contains_any(image_type, ("ORIGINAL",)) else 0
+    primary_score = 15 if _contains_any(image_type, ("PRIMARY",)) else 0
+    axial_score = 10 if _contains_any(image_type, ("AXIAL",)) else 0
+    abdomen_score = 10 if _contains_any(text, rules.get("strong_abdomen_terms", [])) else 5 if _contains_any(text, rules.get("supporting_abdomen_terms", [])) else 0
+    organ_focus_penalty = -int(rules.get("organ_focus_penalty", 15)) if _has_organ_focus(text, rules) else 0
+    return {
+        "phase_type": phase_type, "is_soft_kernel": int(kernel_type == "soft"),
+        "is_bone_kernel": int(kernel_type == "bone"), "is_large_fov": int(fov_score > 0),
+        "organ_focus_penalty": organ_focus_penalty, "coverage_score": coverage_score,
+        "fov_score": fov_score, "kernel_score": kernel_score, "phase_score": phase_score,
+        "thickness_score": thickness_score, "original_score": original_score,
+        "primary_score": primary_score, "axial_score": axial_score, "abdomen_score": abdomen_score,
+    }
+
+
+def _classify_kernel(row, rules=None):
+    value = " ".join(str(row.get(column, "")) for column in ("convolution_kernel", "series_description")).upper()
+    rules = rules or {}
+    if _contains_any(value, rules.get("bone_kernel_terms", ("BONE", "LUNG", "SHARP", "EDGE", "DETAIL", "B70", "B80"))):
+        return "bone"
+    if _contains_any(value, rules.get("soft_kernel_terms", ("STD", "STANDARD", "SOFT", "BODY", "B30", "B31", "B35", "B40"))):
+        return "soft"
+    return "neutral"
+
+
+def _classify_phase(row, rules=None):
+    value = " ".join(str(row.get(column, "")) for column in ("series_description", "study_description")).upper()
+    phase_terms = (rules or {}).get("phase_terms", {})
+    if _contains_any(value, phase_terms.get("venous", ("PORTAL VENOUS", "PORTALVENOUS", "VENOUS"))):
+        return "venous"
+    if _contains_any(value, phase_terms.get("delayed", ("DELAYED", "DELAY"))):
+        return "delayed"
+    if _contains_any(value, phase_terms.get("noncontrast", ("NONCONTRAST", "NON-CONTRAST", "PRE-CONTRAST", "PRECONTRAST", "PRE"))):
+        return "noncontrast"
+    if _contains_any(value, phase_terms.get("arterial", ("ARTERIAL", "ART"))):
+        return "arterial"
+    return "unknown"
+
+
+def _score_z_coverage(value, rules=None):
     try:
-        thickness = float(row.get("slice_thickness", ""))
+        extent = float(value)
     except (TypeError, ValueError):
-        thickness = 0
-    if 0 < thickness <= 3:
-        score += 10
+        return 0
+    thresholds = (rules or {}).get("coverage_score_thresholds", {500: 60, 400: 40, 300: 20, 200: 10})
+    return max((int(score) for threshold, score in thresholds.items() if extent >= float(threshold)), default=0)
+
+
+def _score_reconstruction_diameter(value, rules=None):
+    try:
+        diameter = float(value)
+    except (TypeError, ValueError):
+        return 0
+    thresholds = (rules or {}).get("fov_score_thresholds", {350: 40, 300: 20})
+    score = max((int(score) for threshold, score in thresholds.items() if diameter >= float(threshold)), default=0)
+    if diameter < float((rules or {}).get("small_fov_threshold", 250)):
+        score -= int((rules or {}).get("small_fov_penalty", 20))
     return score
 
 
-def _automatic_candidate(row) -> bool:
-    return all(int(row.get(name, 0)) == 1 for name in (
-        "pass_modality", "pass_original", "pass_primary", "pass_axial",
-        "strong_abdomen_evidence", "pass_z_extent", "pass_num_slices",
-    )) and int(row.get("reject_anatomy", 0)) == 0 and int(row.get("reject_derived", 0)) == 0 and int(row.get("reject_short_series", 0)) == 0
+def _has_organ_focus(text, rules):
+    return _contains_any(text, rules.get("organ_focus_terms", ("LIVER", "HEPATIC", "RENAL", "KIDNEY", "PANCREAS", "ADRENAL", "AORTA", "CTA")))
+
+
+def _number(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _recommendations(frame, rules):
@@ -185,4 +265,4 @@ def _recommendations(frame, rules):
 
 def _contains_any(value, terms) -> bool:
     text = str(value).upper()
-    return any(re.search(r"(?:^|[^A-Z0-9]){}(?:$|[^A-Z0-9])".format(re.escape(term)), text) for term in terms)
+    return any(re.search(r"(?:^|[^A-Z0-9]){}(?:$|[^A-Z0-9])".format(re.escape(str(term).upper())), text) for term in terms)

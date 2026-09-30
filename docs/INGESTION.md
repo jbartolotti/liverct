@@ -41,7 +41,7 @@ and series counts, tier counts, review montage counts, and staging totals.
 Use `--log-level DEBUG` when you need per-file details such as existing staged
 files that were skipped.
 
-`inventory.tsv`, the complete scored audit inventory, subject-specific HTML reports, and sourcedata are generated. Scoring groups series by StudyInstanceUID, falling back to subject and study date, and recommends one PRIMARY series per study with other eligible acquisitions marked SECONDARY. The human-facing report and `review.tsv` are compact: each subject/date contributes one AUTO_PRIMARY row, one NO_CANDIDATE status row, or only the eligible competing candidates when review is required. Rejected and non-candidate series remain in the scored audit inventory but are omitted from human review. `review.tsv` is manually edited and preserved; its editable column is `reviewer_decision` with values `PRIMARY`, `SECONDARY`, or `REJECT`. By default the manifest includes PRIMARY rows only; `--include-secondary` also includes SECONDARY rows, and REJECT rows are never staged. `manifest.tsv` is the authoritative selected-series import list.
+`inventory.tsv`, the complete scored audit inventory, subject-specific HTML reports, and sourcedata are generated. Scoring groups series by StudyInstanceUID, falling back to subject and study date, and recommends one PRIMARY series per scan date with other eligible acquisitions marked SECONDARY. Selection is geometry-first: coverage, reconstruction diameter, kernel, phase, and slice thickness dominate the score, while naming conventions and `ORIGINAL`/`PRIMARY`/`AXIAL` flags provide supporting evidence. The human-facing report may summarize every scan date, but `review.tsv` is an intentionally small queue containing only ambiguous `REVIEW_REQUIRED` candidates. Automatic primary selections and `NO_CANDIDATE` dates are omitted from `review.tsv`; all series and explainability fields remain in `inventory_scored.tsv`. `review.tsv` is manually edited and preserved; its editable column is `reviewer_decision` with values `PRIMARY`, `SECONDARY`, or `REJECT`. By default the manifest includes PRIMARY rows only; `--include-secondary` also includes SECONDARY rows, and REJECT rows are never staged. `manifest.tsv` is the authoritative selected-series import list.
 
 Review HTML and TSV artifacts use the same subject, study-date, and numeric
 series-number ordering. The TSV includes an `index` column and an `is_data`
@@ -54,18 +54,21 @@ Automatic candidate selection is performed once per subject and study date,
 even when that date contains multiple `StudyInstanceUID` values. Include and
 exclude terms are matched against the combined `series_description`,
 `study_description`, and `body_part_examined` text, so anatomy recorded only
-at the study level still affects eligibility. A candidate must be CT,
-`ORIGINAL`, `PRIMARY`, and `AXIAL`, have strong abdominal/torso evidence, at
-least 50 slices, and at least 200 mm of z coverage. Head, neck, chest-only,
-extremity, scout/localizer, dose, derived, reformatted, MIP, and other
-explicitly excluded series cannot be automatic candidates. The scorer adds
-`candidate_score`, `candidate_rank`, `candidate_status`,
-`is_auto_primary`, and `candidate_reason` to the scored inventory.
+at the study level still affects eligibility. A candidate must be CT, have
+sufficient z coverage and slice count, and not be a scout/localizer, derived
+reconstruction, screenshot, volume rendering, MIP/MPR, or sagittal/coronal
+only series. `ORIGINAL`, `PRIMARY`, `AXIAL`, and abdomen terms are scoring
+evidence, not hard requirements. The scorer adds geometry and reconstruction
+explainability fields including `phase_type`, `coverage_score`, `fov_score`,
+`kernel_score`, `phase_score`, `thickness_score`, `organ_focus_penalty`, and
+`candidate_score`, along with `candidate_rank`, `candidate_status`,
+`is_auto_primary`, and `candidate_reason`.
 
-The default automatic score threshold is 110, with a minimum 10-point margin
-over the runner-up. A single strict candidate is marked `AUTO_PRIMARY` without
-requiring the score threshold; when candidates compete, the threshold and
-margin are applied. A clear winner is marked `AUTO_PRIMARY`; an ambiguous
-group is marked `REVIEW_REQUIRED`; and a date with no eligible candidates is
+The default automatic score threshold is 60, with a minimum 10-point margin
+over the runner-up. A single eligible candidate is marked `AUTO_PRIMARY`
+without requiring the score threshold; when candidates compete, the threshold
+and margin are applied. A clear winner is marked `AUTO_PRIMARY`; an ambiguous
+group is marked `REVIEW_REQUIRED` and is the only kind of group written to
+`review.tsv`; and a date with no eligible candidates is
 affirmatively marked `NO_CANDIDATE`. The thresholds and term lists are
 configurable under `tiering`.

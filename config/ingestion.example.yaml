@@ -86,7 +86,58 @@ tiering:
     - MPR
     - CURVED
     - OBLIQUE
-  auto_min_score: 110
+  coverage_score_thresholds:
+    500: 60
+    400: 40
+    300: 20
+    200: 10
+  fov_score_thresholds:
+    350: 40
+    300: 20
+  small_fov_threshold: 250
+  small_fov_penalty: 20
+  organ_focus_terms:
+    - LIVER
+    - HEPATIC
+    - RENAL
+    - KIDNEY
+    - PANCREAS
+    - ADRENAL
+    - AORTA
+    - CTA
+  organ_focus_penalty: 15
+  phase_terms:
+    venous:
+      - VENOUS
+      - PORTAL VENOUS
+    noncontrast:
+      - PRE
+      - NONCONTRAST
+      - NON-CONTRAST
+      - PRE-CONTRAST
+    arterial:
+      - ARTERIAL
+    delayed:
+      - DELAY
+      - DELAYED
+  soft_kernel_terms:
+    - STD
+    - STANDARD
+    - SOFT
+    - BODY
+    - B30
+    - B31
+    - B35
+    - B40
+  bone_kernel_terms:
+    - BONE
+    - LUNG
+    - SHARP
+    - EDGE
+    - DETAIL
+    - B70
+    - B80
+  auto_min_score: 60
   auto_min_margin: 10
 
 review:

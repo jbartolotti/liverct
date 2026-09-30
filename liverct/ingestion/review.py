@@ -55,7 +55,7 @@ def generate_review_reports(scored_inventory: Path, output_dir: Path, config=Non
                 if thumbnail:
                     thumbnail_count += 1
                 image_html = "<img src='{}' alt='Representative slice' height='260'>".format(escape(thumbnail)) if thumbnail else ""
-                series_rows.append("<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><code>{}</code></td></tr>".format(
+                series_rows.append("<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr><tr><td colspan='8'><strong>Series Key:</strong> <code>{}</code></td></tr>".format(
                     escape(recommendation), escape(str(row.get("series_number", ""))),
                     escape(str(row.get("series_description", ""))), escape(str(row.get("image_type", ""))),
                     escape(str(row.get("num_slices", ""))), escape(str(row.get("z_extent_mm", ""))),
@@ -67,7 +67,7 @@ def generate_review_reports(scored_inventory: Path, output_dir: Path, config=Non
                 status_row = review_rows.iloc[0] if not review_rows.empty else study_rows.iloc[0]
                 reason = status_row.get("candidate_reason", "") or "No candidate sequence available"
                 series_rows.append("<tr><td colspan='9'>{}</td></tr>".format(escape(str(reason))))
-            study_sections.append("<section><h2>Study Date: {}</h2><p><strong>Study Description:</strong> {}</p><p><strong>Study Instance UID(s):</strong> {}</p><p><strong>Automatic status:</strong> {}</p><table><thead><tr><th>Recommendation</th><th>Series #</th><th>Description</th><th>Image Type</th><th>Num Slices</th><th>Z Extent (mm)</th><th>Slice Thickness</th><th>Montage</th><th>Series Key</th></tr></thead><tbody>{}</tbody></table></section>".format(
+            study_sections.append("<section><h2>Study Date: {}</h2><p><strong>Study Description:</strong> {}</p><p><strong>Study Instance UID(s):</strong> {}</p><p><strong>Automatic status:</strong> {}</p><table><thead><tr><th>Recommendation</th><th>Series #</th><th>Description</th><th>Image Type</th><th>Num Slices</th><th>Z Extent (mm)</th><th>Slice Thickness</th><th>Montage</th></tr></thead><tbody>{}</tbody></table></section>".format(
                 escape(_display_date(first.get("study_date", ""))), escape(str(first.get("study_description", ""))),
                 escape(study_uids or str(study_key)), escape(scan_status), "".join(series_rows)))
         patient_label = str(patient_id) or "unknown"

@@ -525,9 +525,11 @@ def test_review_html_groups_by_patient_id_not_subject_folder(tmp_path):
     report = (output_dir / "sub-patient-1.html").read_text(encoding="utf-8")
     assert "Study Date: 2020-07-22" in report
     assert "Study Date: 2021-08-30" in report
-    assert "<th>Series Key</th>" in report
-    assert "011|study1|s1" in report
-    assert "012|study2|s2" in report
+    assert "<th>Series Key</th>" not in report
+    first_series = report.index("011|study1|s1")
+    second_series = report.index("012|study2|s2")
+    assert report.index("<strong>Series Key:</strong>", report.index(">ABD</td>")) < first_series
+    assert report.index("<strong>Series Key:</strong>", report.index(">ABD</td>", report.index(">ABD</td>") + 1)) < second_series
     assert not (output_dir / "sub-011.html").exists()
     assert not (output_dir / "sub-012.html").exists()
 

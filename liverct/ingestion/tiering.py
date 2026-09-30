@@ -164,8 +164,10 @@ def _recommendations(frame, rules):
         best = eligible.iloc[0]
         second_score = int(eligible.iloc[1]["candidate_score"]) if len(eligible) > 1 else -1
         score = int(best["candidate_score"])
-        status = "AUTO_PRIMARY" if score >= min_score and (len(eligible) == 1 or score - second_score >= min_margin) else "REVIEW_REQUIRED"
-        reason = "best strict abdominal axial candidate"
+        single_candidate = len(eligible) == 1
+        clear_margin = score - second_score >= min_margin
+        status = "AUTO_PRIMARY" if single_candidate or (score >= min_score and clear_margin) else "REVIEW_REQUIRED"
+        reason = "only strict abdominal axial candidate" if single_candidate else "best strict abdominal axial candidate"
         if status == "REVIEW_REQUIRED":
             reason = "candidate score or separation from runner-up is below automatic threshold"
         for index in scan_rows.index:

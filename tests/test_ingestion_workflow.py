@@ -139,6 +139,45 @@ def test_scoring_affirms_no_candidate_for_non_abdominal_scan(tmp_path):
     assert scored["is_auto_primary"].sum() == 0
 
 
+def test_scoring_uses_study_description_for_anatomy_exclusion(tmp_path):
+    inventory = pd.DataFrame([{
+        "subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "lower-extrem",
+        "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL",
+        "series_description": "ROUTINE", "study_description": "CT LOWER EXTREM",
+        "z_extent_mm": "350", "num_slices": "100",
+    }])
+    source = tmp_path / "inventory.tsv"
+    inventory.to_csv(source, sep="\t", index=False)
+
+    scored = score_inventory(source)
+
+    row = scored.iloc[0]
+    assert row["reject_anatomy"] == 1
+    assert row["automatic_candidate"] == 0
+    assert row["recommendation"] == "REJECT"
+
+
+def test_scoring_auto_approves_single_candidate_below_score_threshold(tmp_path):
+    inventory = pd.DataFrame([{
+        "subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "only",
+        "study_date": "20200722", "modality": "CT", "image_type": "ORIGINAL\\PRIMARY\\AXIAL",
+        "series_description": "ABD", "study_description": "ABDOMEN",
+        "z_extent_mm": "200", "num_slices": "50",
+    }])
+    source = tmp_path / "inventory.tsv"
+    inventory.to_csv(source, sep="\t", index=False)
+    config = load_config()
+    config.values["tiering"]["auto_min_score"] = 999
+
+    scored = score_inventory(source, config=config)
+
+    row = scored.iloc[0]
+    assert row["candidate_score"] < 999
+    assert row["candidate_status"] == "AUTO_PRIMARY"
+    assert row["recommendation"] == "PRIMARY"
+    assert row["is_auto_primary"] == 1
+
+
 def test_manifest_includes_secondary_only_when_requested(tmp_path):
     inventory = pd.DataFrame([
         {"subject_folder": "011", "study_instance_uid": "study1", "series_instance_uid": "s1", "study_date": "20200722", "series_number": "2", "series_description": "ABD", "study_description": "ABDOMEN", "source_directory": str(tmp_path), "representative_file": "x1", "tier": "Tier 1", "tier_reason": "primary", "recommendation": "PRIMARY", "study_group_key": "011|study1", "rule_version": "1"},

@@ -51,16 +51,21 @@ The `review_row_type` column identifies `SERIES`, `STATUS`, and `SEPARATOR`
 rows.
 
 Automatic candidate selection is performed once per subject and study date,
-even when that date contains multiple `StudyInstanceUID` values. A candidate
-must be CT, `ORIGINAL`, `PRIMARY`, and `AXIAL`, have strong abdominal/torso
-evidence, at least 50 slices, and at least 200 mm of z coverage. Head, neck,
-chest-only, extremity, scout/localizer, dose, derived, reformatted, MIP, and
-other explicitly excluded series cannot be automatic candidates. The scorer
-adds `candidate_score`, `candidate_rank`, `candidate_status`,
+even when that date contains multiple `StudyInstanceUID` values. Include and
+exclude terms are matched against the combined `series_description`,
+`study_description`, and `body_part_examined` text, so anatomy recorded only
+at the study level still affects eligibility. A candidate must be CT,
+`ORIGINAL`, `PRIMARY`, and `AXIAL`, have strong abdominal/torso evidence, at
+least 50 slices, and at least 200 mm of z coverage. Head, neck, chest-only,
+extremity, scout/localizer, dose, derived, reformatted, MIP, and other
+explicitly excluded series cannot be automatic candidates. The scorer adds
+`candidate_score`, `candidate_rank`, `candidate_status`,
 `is_auto_primary`, and `candidate_reason` to the scored inventory.
 
 The default automatic score threshold is 110, with a minimum 10-point margin
-over the runner-up. A clear winner is marked `AUTO_PRIMARY`; an ambiguous
+over the runner-up. A single strict candidate is marked `AUTO_PRIMARY` without
+requiring the score threshold; when candidates compete, the threshold and
+margin are applied. A clear winner is marked `AUTO_PRIMARY`; an ambiguous
 group is marked `REVIEW_REQUIRED`; and a date with no eligible candidates is
 affirmatively marked `NO_CANDIDATE`. The thresholds and term lists are
 configurable under `tiering`.

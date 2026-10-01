@@ -8,6 +8,7 @@ the proposed CT extension: https://bids.neuroimaging.io/extensions/beps/bep_024.
 import logging
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional, Any, List
 
@@ -17,7 +18,11 @@ logger = logging.getLogger(__name__)
 class CTBIDSConverter:
     """Convert DICOM CT data to BIDS format using dcm2bids4ct."""
 
-    def __init__(self, dcm2bids4ct_path: Optional[str] = None):
+    def __init__(
+        self,
+        dcm2bids4ct_path: Optional[str] = None,
+        gdcmconv_path: str = "gdcmconv",
+    ):
         """
         Initialize the converter.
 
@@ -25,8 +30,11 @@ class CTBIDSConverter:
         ----------
         dcm2bids4ct_path : str, optional
             Path to dcm2bids4ct executable. If None, assumes it's in PATH.
+        gdcmconv_path : str
+            Path to the GDCM decompression executable.
         """
         self.dcm2bids4ct_path = dcm2bids4ct_path or "dcm2bids4ct"
+        self.gdcmconv_path = gdcmconv_path
 
     def convert(
         self,
@@ -35,6 +43,7 @@ class CTBIDSConverter:
         subject_id: Optional[str] = None,
         session_id: Optional[str] = None,
         config_file: Optional[str] = None,
+        overwrite: bool = True,
         **kwargs: Any,
     ) -> bool:
         """
@@ -53,6 +62,9 @@ class CTBIDSConverter:
             Session identifier (e.g., "01", "ses-01").
         config_file : str, optional
             Path to custom dcm2bids configuration file.
+        overwrite : bool
+            If False, skip conversion when matching NIfTI and JSON outputs
+            already exist. Defaults to True for backward compatibility.
         **kwargs : dict
             Additional arguments to pass to dcm2bids4ct.
 
@@ -99,6 +111,10 @@ class CTBIDSConverter:
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        if not overwrite and self._has_complete_output(output_dir, name_prefix):
+            logger.info("Skipping existing conversion: %s", dicom_path)
+            return True
+
         # Build command for dcm2bids4ct (wrapper around dcm2niix)
         # Usage: dcm2bids4ct <input_dir> [dcm2niix_args...]
         cmd = [
@@ -115,16 +131,18 @@ class CTBIDSConverter:
         if config_file:
             logger.warning("config_file is provided but dcm2bids4ct does not accept -c; ignoring.")
 
-        # Add any additional kwargs
+        extra_args = []
         for key, value in kwargs.items():
             if isinstance(value, bool):
                 if value:
-                    cmd.append(f"--{key}")
+                    extra_args.append(f"--{key}")
             else:
-                cmd.extend([f"--{key}", str(value)])
+                extra_args.extend([f"--{key}", str(value)])
+        cmd.extend(extra_args)
 
-        # Run conversion
-        logger.info(f"Running: {' '.join(cmd)}")
+        # Run conversion, then retry with GDCM only when the normal conversion
+        # fails.
+        logger.info("Running dcm2bids4ct: %s", " ".join(cmd))
         try:
             result = subprocess.run(cmd, check=True, capture_output=True, text=True)
             logger.info("DICOM to BIDS conversion completed successfully")
@@ -132,13 +150,102 @@ class CTBIDSConverter:
                 logger.debug(result.stdout)
             return True
         except subprocess.CalledProcessError as e:
-            logger.error(f"DICOM to BIDS conversion failed: {e.stderr}")
-            return False
+            logger.warning(
+                "Initial conversion failed, attempting GDCM decompression fallback: %s",
+                e.stderr,
+            )
+            return self._convert_with_gdcm_fallback(
+                dicom_path,
+                output_dir,
+                name_prefix,
+                original_error=e,
+                extra_args=extra_args,
+            )
         except FileNotFoundError:
             logger.error(
                 f"dcm2bids4ct not found. Please install it or provide path to executable."
             )
             return False
+
+    @staticmethod
+    def _has_complete_output(output_dir: Path, name_prefix: str) -> bool:
+        """Return whether a matching NIfTI has its JSON sidecar."""
+        output_prefix = name_prefix.replace("%s", "")
+        for nifti_path in output_dir.glob(f"{output_prefix}*.nii.gz"):
+            nifti_stem = nifti_path.name[:-len(".nii.gz")]
+            if (output_dir / f"{nifti_stem}.json").is_file():
+                return True
+        return False
+
+    def _convert_with_gdcm_fallback(
+        self,
+        dicom_path: Path,
+        output_dir: Path,
+        name_prefix: str,
+        original_error: subprocess.CalledProcessError,
+        extra_args: List[str],
+    ) -> bool:
+        """Decompress a failed series with GDCM and retry conversion."""
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                decompressed_dir = Path(temp_dir)
+                source_files = [path for path in dicom_path.rglob("*") if path.is_file()]
+                decompressed_count = 0
+
+                for source_file in source_files:
+                    relative_path = source_file.relative_to(dicom_path)
+                    output_file = decompressed_dir / relative_path
+                    output_file.parent.mkdir(parents=True, exist_ok=True)
+                    subprocess.run(
+                        [
+                            self.gdcmconv_path,
+                            "--raw",
+                            str(source_file),
+                            str(output_file),
+                        ],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if output_file.is_file():
+                        decompressed_count += 1
+
+                if decompressed_count == 0:
+                    raise RuntimeError("GDCM decompression produced zero DICOM files.")
+
+                logger.info(
+                    "Decompressed %d DICOM files with GDCM", decompressed_count
+                )
+                retry_cmd = [
+                    self.dcm2bids4ct_path,
+                    str(decompressed_dir),
+                    "-o",
+                    str(output_dir),
+                    "-f",
+                    name_prefix,
+                ]
+                retry_cmd.extend(extra_args)
+                logger.info("Retrying dcm2bids4ct with GDCM output")
+                retry_result = subprocess.run(
+                    retry_cmd,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                if retry_result.stdout:
+                    logger.debug(retry_result.stdout)
+                logger.info("GDCM fallback conversion succeeded")
+                return True
+        except FileNotFoundError as e:
+            if e.filename == self.gdcmconv_path:
+                raise RuntimeError(
+                    "gdcmconv not found. Install GDCM to enable conversion fallback."
+                ) from e
+            logger.error("GDCM fallback conversion failed: %s", e)
+            raise original_error from e
+        except subprocess.CalledProcessError as e:
+            logger.error("GDCM fallback conversion failed: %s", e.stderr)
+            raise original_error from e
 
     @staticmethod
     def _normalize_subject_label(subject_id: Optional[str]) -> Optional[str]:
@@ -307,19 +414,6 @@ def convert_dicom_directory_to_bids(
             else:
                 output_dir = bids_path / f"sub-{subject_label}" / "ct"
 
-            if not overwrite:
-                existing_nifti = list(output_dir.glob("*.nii.gz"))
-                if existing_nifti:
-                    entity = f"sub-{subject_label}"
-                    if session_label:
-                        entity += f"/ses-{session_label}"
-                    logger.info(
-                        f"{entity} already converted "
-                        f"({len(existing_nifti)} NIfTI file(s) found), skipping..."
-                    )
-                    results["skipped"] += len(series_folders)
-                    continue
-
             for series_folder in series_folders:
                 entity = f"{subject_folder.name}"
                 if session_id:
@@ -332,6 +426,7 @@ def convert_dicom_directory_to_bids(
                     subject_id=subject_label,
                     session_id=session_label,
                     config_file=str(config_file) if config_file else None,
+                    overwrite=overwrite,
                 )
 
                 if success:

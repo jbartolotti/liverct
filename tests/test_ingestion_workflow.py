@@ -1,11 +1,13 @@
 import logging
+import subprocess
+from pathlib import Path
 
 import pandas as pd
 import pytest
 import numpy as np
 from pydicom import Dataset
 
-from liverct.bids import convert_dicom_directory_to_bids
+from liverct.bids import CTBIDSConverter, convert_dicom_directory_to_bids
 from liverct.ingestion import build_manifest, inventory_archive, load_config, score_inventory, stage_sourcedata
 from liverct.ingestion.review import _build_slice_index, _display_pixels, _generate_montages, _make_thumbnail, generate_review_reports
 from liverct.ingestion.tiering import _classify_kernel, _classify_phase, _score_reconstruction_diameter, _score_z_coverage
@@ -56,7 +58,7 @@ def test_bids_conversion_uses_implicit_sourcedata_and_logs_session(tmp_path, mon
     _create_archive_subject(series)
     converted = []
 
-    def fake_convert(self, dicom_dir, bids_root, subject_id, session_id, config_file):
+    def fake_convert(self, dicom_dir, bids_root, subject_id, session_id, config_file, **kwargs):
         converted.append((dicom_dir, bids_root, subject_id, session_id))
         return True
 
@@ -67,6 +69,59 @@ def test_bids_conversion_uses_implicit_sourcedata_and_logs_session(tmp_path, mon
     assert results == {"successful": 1, "failed": 0, "skipped": 0}
     assert converted == [(str(series), str(bids_root), "001", "01")]
     assert "Processing subject sub-001, session ses-01" in caplog.text
+
+
+def test_converter_uses_gdcm_fallback_after_failed_conversion(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    series = tmp_path / "series-1"
+    _create_archive_subject(series)
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[0] == "dcm2bids4ct" and len(calls) == 1:
+            raise subprocess.CalledProcessError(1, command, stderr="JPEG decode failed")
+        if command[0] == "gdcmconv":
+            output_path = Path(command[-1])
+            output_path.write_bytes(b"decompressed")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = CTBIDSConverter().convert(
+        dicom_dir=str(series),
+        bids_root=str(tmp_path / "bids"),
+        subject_id="001",
+        session_id="01",
+    )
+
+    assert result is True
+    assert calls[0][0] == "dcm2bids4ct"
+    assert sum(command[0] == "gdcmconv" for command in calls) == 3
+    assert calls[-1][0] == "dcm2bids4ct"
+    assert "GDCM fallback conversion succeeded" in caplog.text
+
+
+def test_converter_skips_complete_outputs_when_overwrite_disabled(tmp_path, monkeypatch):
+    output_dir = tmp_path / "bids" / "sub-001" / "ses-01" / "ct"
+    output_dir.mkdir(parents=True)
+    (output_dir / "sub-001_ses-01_ct_1.nii.gz").write_bytes(b"nifti")
+    (output_dir / "sub-001_ses-01_ct_1.json").write_text("{}", encoding="utf-8")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("dcm2bids4ct should not run for complete outputs")
+
+    monkeypatch.setattr(subprocess, "run", fail_if_called)
+
+    result = CTBIDSConverter().convert(
+        dicom_dir=str(tmp_path),
+        bids_root=str(tmp_path / "bids"),
+        subject_id="001",
+        session_id="01",
+        overwrite=False,
+    )
+
+    assert result is True
 
 
 def test_inventory_test_mode_limits_top_level_search(tmp_path):

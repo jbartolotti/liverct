@@ -188,11 +188,10 @@ class CTBIDSConverter:
 
 
 def convert_dicom_directory_to_bids(
-    raw_data_dir: Path,
-    bids_root: Path,
+    raw_data_dir: Optional[Path] = None,
+    bids_root: Optional[Path] = None,
     config_file: Optional[Path] = None,
     dcm2bids4ct_path: Optional[str] = None,
-    dicom_subdir: str = "DICOM",
     overwrite: bool = False,
 ) -> dict:
     """
@@ -204,17 +203,15 @@ def convert_dicom_directory_to_bids(
 
     Parameters
     ----------
-    raw_data_dir : Path
-        Path to the sourcedata directory containing ``sub-*`` directories
+    raw_data_dir : Path, optional
+        Path to the sourcedata directory containing ``sub-*`` directories. If
+        omitted, ``bids_root / "sourcedata"`` is used.
     bids_root : Path
         Path where BIDS dataset will be created
     config_file : Path, optional
         Path to custom dcm2bids configuration file
     dcm2bids4ct_path : str, optional
         Path to dcm2bids4ct executable (if not in PATH)
-    dicom_subdir : str
-        Retained for API compatibility. Series directories are now discovered
-        from their contents and this value is not used.
     overwrite : bool
         If True, re-convert all subject/session inputs even if they already
         exist in BIDS. If False (default), skip existing subject/session CT
@@ -225,8 +222,15 @@ def convert_dicom_directory_to_bids(
     dict
         Summary with keys: 'successful', 'failed', 'skipped'
     """
-    import logging
     logger = logging.getLogger(__name__)
+
+    if bids_root is None:
+        raise ValueError("bids_root is required")
+
+    bids_path = Path(bids_root)
+    source_path = Path(raw_data_dir) if raw_data_dir is not None else bids_path / "sourcedata"
+    if not source_path.is_dir():
+        raise FileNotFoundError(f"DICOM source directory not found: {source_path}")
     
     logging.basicConfig(
         level=logging.INFO,
@@ -234,8 +238,8 @@ def convert_dicom_directory_to_bids(
     )
     
     logger.info("Starting DICOM to BIDS conversion")
-    logger.info(f"Raw data directory: {raw_data_dir}")
-    logger.info(f"BIDS root: {bids_root}")
+    logger.info(f"Raw data directory: {source_path}")
+    logger.info(f"BIDS root: {bids_path}")
     if not overwrite:
         logger.info("Skipping already-converted subjects (overwrite=False)")
     else:
@@ -245,7 +249,7 @@ def convert_dicom_directory_to_bids(
 
     subject_folders = [
         d
-        for d in Path(raw_data_dir).iterdir()
+        for d in source_path.iterdir()
         if d.is_dir() and d.name.startswith("sub-")
     ]
     logger.info(f"Found {len(subject_folders)} subject folders")
@@ -274,6 +278,11 @@ def convert_dicom_directory_to_bids(
             conversion_groups = [(None, subject_folder)]
 
         for session_id, parent_folder in conversion_groups:
+            logger.info(
+                "Processing subject %s, session %s",
+                subject_folder.name,
+                session_id or "(no session)",
+            )
             series_folders = _find_dicom_series_directories(parent_folder)
             if not series_folders:
                 if session_id is None:
@@ -290,13 +299,13 @@ def convert_dicom_directory_to_bids(
             session_label = session_id.replace("ses-", "") if session_id else None
             if session_label:
                 output_dir = (
-                    Path(bids_root)
+                    bids_path
                     / f"sub-{subject_label}"
                     / f"ses-{session_label}"
                     / "ct"
                 )
             else:
-                output_dir = Path(bids_root) / f"sub-{subject_label}" / "ct"
+                output_dir = bids_path / f"sub-{subject_label}" / "ct"
 
             if not overwrite:
                 existing_nifti = list(output_dir.glob("*.nii.gz"))
@@ -319,7 +328,7 @@ def convert_dicom_directory_to_bids(
 
                 success = converter.convert(
                     dicom_dir=str(series_folder),
-                    bids_root=str(bids_root),
+                    bids_root=str(bids_path),
                     subject_id=subject_label,
                     session_id=session_label,
                     config_file=str(config_file) if config_file else None,

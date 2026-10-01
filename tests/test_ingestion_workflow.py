@@ -1,8 +1,11 @@
+import logging
+
 import pandas as pd
 import pytest
 import numpy as np
 from pydicom import Dataset
 
+from liverct.bids import convert_dicom_directory_to_bids
 from liverct.ingestion import build_manifest, inventory_archive, load_config, score_inventory, stage_sourcedata
 from liverct.ingestion.review import _build_slice_index, _display_pixels, _generate_montages, _make_thumbnail, generate_review_reports
 from liverct.ingestion.tiering import _classify_kernel, _classify_phase, _score_reconstruction_diameter, _score_z_coverage
@@ -44,6 +47,26 @@ def _create_archive_subject(archive, series_uid="series1"):
     archive.mkdir(parents=True)
     for index in range(1, 4):
         _write_dicom(archive / "image{}.dcm".format(index), series_uid, index)
+
+
+def test_bids_conversion_uses_implicit_sourcedata_and_logs_session(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    bids_root = tmp_path / "bids"
+    series = bids_root / "sourcedata" / "sub-001" / "ses-01" / "series-1"
+    _create_archive_subject(series)
+    converted = []
+
+    def fake_convert(self, dicom_dir, bids_root, subject_id, session_id, config_file):
+        converted.append((dicom_dir, bids_root, subject_id, session_id))
+        return True
+
+    monkeypatch.setattr("liverct.bids.CTBIDSConverter.convert", fake_convert)
+
+    results = convert_dicom_directory_to_bids(bids_root=bids_root)
+
+    assert results == {"successful": 1, "failed": 0, "skipped": 0}
+    assert converted == [(str(series), str(bids_root), "001", "01")]
+    assert "Processing subject sub-001, session ses-01" in caplog.text
 
 
 def test_inventory_test_mode_limits_top_level_search(tmp_path):

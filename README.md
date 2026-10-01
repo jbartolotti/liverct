@@ -36,13 +36,10 @@ Notes:
 from pathlib import Path
 from liverct import convert_dicom_directory_to_bids
 
-raw_data_dir = Path("/path/to/raw_ct_data")
 bids_root = Path("/path/to/bids_dataset")
 
 results = convert_dicom_directory_to_bids(
-	raw_data_dir=raw_data_dir,
 	bids_root=bids_root,
-	dicom_subdir="DICOM",  # change if your folder name differs
 )
 print(results)
 ```
@@ -75,7 +72,7 @@ Pass `tasks=None` to skip segmentation entirely and run only cohort-level jobs a
 
 ### Conversion
 
-- `dicom_subdir` (default `"DICOM"`): name of DICOM subfolder in each source case directory
+- `raw_data_dir` (default `bids_root / "sourcedata"`): explicit source directory containing `sub-*` folders
 - `overwrite` (default `False`): if `True`, re-convert all subjects even if they already exist in BIDS. If `False`, automatically skips subjects that have already been converted to BIDS (i.e., have existing `.nii.gz` files in `bids_root/sub-*/ct/`). Useful for re-running the function when new participants are added without re-converting existing data.
 
 ### Segmentation
